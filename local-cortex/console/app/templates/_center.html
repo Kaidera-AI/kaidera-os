@@ -1,0 +1,171 @@
+{#
+  COLUMN 3 — center region. Dispatches on `active_view`:
+    - "dashboard" → the ALL-PROJECTS overview (cross-project fleet): a KPI strip
+      + a card per active project (real vitals · health · best-effort epic strip).
+      This is the landing Dashboard; clicking a card scopes cols 2/4 to that
+      project (reuses the rail's GET /projects/{key} → #scope-region flow).
+    - "agent"     → the selected-agent DETAIL view (R2: header + token usage +
+      recent-activity feed + UI-only chat composer)
+    - "history"   → R7 reverse-chrono activity timeline + recent-decisions rail
+    - "analytics" → R7 usage analytics (stat cards + per-agent breakdowns)
+    - "graph"     → R7 knowledge/code-graph stats + searchable entity browse
+    - "settings"  → the R4 Settings view
+    - anything else → the "coming in a later increment" placeholder
+
+  Carries data-active-view on its root so the top-bar nav re-syncs its active
+  tab after an HTMX swap. The dashboard view self-polls every 10s; the R7 views
+  poll on a slower cadence (their data moves less than the live fleet); the
+  agent + settings views do NOT poll (focused, on-demand panes).
+  TODO(SSE): replace these polls with an EventSource on /events.
+#}
+{% if active_view == "dashboard" %}
+<div
+  class="center on"
+  data-active-view="dashboard"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+  hx-get="/views/dashboard?project={{ selected_key }}"
+  hx-trigger="every 10s"
+  hx-target="#center-region"
+  hx-swap="innerHTML"
+>
+  {% include "_dashboard.html" %}
+</div>
+{% elif active_view == "project_detail" %}
+{#
+  Per-project DRILL-IN — the click-IN from the all-projects Dashboard (card or
+  the col-2 Metrics 'details ›' link). Shows ONE project's full open-handoffs +
+  tasks LISTS (the Dashboard only had counts). No background poll: it's an
+  on-demand focused pane (re-open to refresh). Carries data-selected-key so the
+  rail/workspace stay synced to this project.
+#}
+<div
+  class="center on"
+  data-active-view="project_detail"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+>
+  {% include "_project_detail.html" %}
+</div>
+{% elif active_view == "dispatch" %}
+{#
+  R3 Dispatch — event-driven handoff → proposed-agent surface. The root carries
+  data-stream-url; the dispatch JS opens EventSource('/stream?project=…') and
+  refreshes THIS center on a new Cortex event (handoff insert/claim), so manual
+  PROPOSE-MODE needs no poll.
+
+  When project dispatch is ON we ALSO add a slow self-poll (every 5s) so orchestrator
+  activity from picked-up → completed/error transitions (which does not emit a Cortex event on
+  completion, since the loop only claims) surfaces in the feed promptly. When
+  project dispatch is OFF there is NO poll (the EventSource alone) — the view stays
+  cost-free in the default/dark state.
+#}
+<div
+  class="center on"
+  data-active-view="dispatch"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+  data-stream-url="/stream?project={{ selected_key }}"
+  data-refresh-url="/views/dispatch?project={{ selected_key }}"
+  {% if autonomous_on %}
+  hx-get="/views/dispatch?project={{ selected_key }}"
+  hx-trigger="every 5s"
+  hx-target="#center-region"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  {% include "_dispatch.html" %}
+</div>
+{% elif active_view == "agent" and agent is defined %}
+{#
+  AGENT DETAIL — the selected agent's own pane: its LIVE WORK TRANSCRIPT (streamed
+  run output — the prominent main content), its ACTIVITY TIMELINE (Cortex history),
+  the token-usage header, and the chat composer. Works for EVERY agent.
+
+  The transcript is streamed live via ONE JS EventSource (no poll — the old ~2s
+  hx-trigger self-poll was removed at T6; the legacy feed-file channel was removed
+  at T12). The single live channel, in _agent_detail.html:
+    • GET /runstate/stream (Milestone 1 T8) — the durable RunState SSOT push: a
+      NOTIFY off the store's run_state_events bus re-reads the SAME read model the
+      first paint used and swaps #ad-tx-panel, so a running run's transcript fills
+      in live and the push can't disagree with the first paint.
+  The pane never auto-refreshes (cost-free/focused); first paint renders the
+  store read model (T7), then the SSE channel keeps it live.
+#}
+<div
+  class="center on"
+  data-active-view="agent"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent="{{ agent.name }}"
+>
+  {% include "_agent_detail.html" %}
+</div>
+{% elif active_view == "history" %}
+{#
+  R7 History — chronological activity timeline (newest at the BOTTOM, chat-style;
+  the pane bottom-pins) + recent-decisions rail.
+  Polls every 20s (slower than the live dashboard) to refresh the feed.
+  TODO(SSE): replace this poll with an EventSource on /events.
+#}
+<div
+  class="center on"
+  data-active-view="history"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+  hx-get="/views/history?project={{ selected_key }}"
+  hx-trigger="every 20s"
+  hx-target="#center-region"
+  hx-swap="innerHTML"
+>
+  {% include "_history.html" %}
+</div>
+{% elif active_view == "analytics" %}
+{#
+  R7 Analytics — usage stat cards + per-agent breakdowns. Polls every 30s
+  (usage counters move slowly). TODO(SSE): swap the poll for /events.
+#}
+<div
+  class="center on"
+  data-active-view="analytics"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+  hx-get="/views/analytics?project={{ selected_key }}"
+  hx-trigger="every 30s"
+  hx-target="#center-region"
+  hx-swap="innerHTML"
+>
+  {% include "_analytics.html" %}
+</div>
+{% elif active_view == "graph" %}
+{#
+  R7 Graph — knowledge/code-graph stats + searchable entity/relationship browse.
+  No background poll: the in-view search box drives reloads on demand (graph
+  data is slow-moving + the rebuild cron is flaky), so an auto-poll would just
+  stomp a search-in-progress. TODO(SSE)/TODO(graph-viz): a rich force-directed
+  canvas + live deltas land later; the stats+list view is the R7 slice.
+#}
+<div
+  class="center on"
+  data-active-view="graph"
+  data-selected-key="{{ selected_key }}"
+  data-selected-agent=""
+>
+  {% include "_graph.html" %}
+</div>
+{% elif active_view == "settings" %}
+  {# R4a Settings view — its own root (carries data-active-view="settings"). #}
+  {% include "_settings.html" %}
+{% else %}
+<div class="center on" data-active-view="{{ active_view }}">
+  <div class="view-ph">
+    <div class="view-ph-card">
+      <div class="view-ph-ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
+      </div>
+      <h2 class="view-ph-t">{{ placeholder_label }}</h2>
+      <p class="view-ph-s">Coming in <strong>{{ placeholder_increment }}</strong>.</p>
+      <p class="view-ph-n">This section of the console isn't wired yet — the shell, project rail, agents column, and live Dashboard are the R1 slice.</p>
+    </div>
+  </div>
+</div>
+{% endif %}

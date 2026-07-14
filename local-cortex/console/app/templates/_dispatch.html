@@ -1,0 +1,519 @@
+{#
+  R3 · DISPATCH center view (live, event-driven, PROPOSE-MODE).
+
+  The operator's "what work is waiting + who should take it" surface. For the
+  selected project it lists OPEN/PENDING handoffs and, per handoff, a RULE-BASED
+  proposed agent (match handoff.to_agent if set, else handoff.to_role, against the
+  roster) with that agent's harness + model — or "unassigned" when nothing in the
+  roster matches.
+
+  PROPOSE-MODE INVARIANT (critical): NOTHING fires autonomously. The dispatch list
+  only PROPOSES. A dispatch runs ONLY when the human clicks an "Approve & Run"
+  button (→ POST /dispatch/{project}/run?agent_name=…), which spawns that agent's
+  harness on the handoff's summary and streams the result here (like the chat).
+  A clear propose-mode banner says so; nothing on page load or on a live event
+  calls the run path.
+
+  EVENT-DRIVEN: this view subscribes (browser EventSource) to the console /stream
+  proxy over Cortex GET /events and REFRESHES the handoff/dispatch list the instant
+  a new event lands — no 10s poll for this view (other views keep their polls). The
+  EventSource + refresh wiring lives in the <script> at the bottom; the center root
+  (in _center.html) carries data-stream-url + data-refresh-url.
+
+  Context (built in main._dispatch_context):
+    `selected`                  : project record (header name)
+    `selected_key`              : project key
+    `dispatch_rows`             : [{id, compound, summary, summary_full, from_agent,
+                                    to_target, priority, proposed|None, created_at}]
+                                  sorted urgent-major; proposed = {name, display_name,
+                                  harness, harness_label, model, matched_on} or None
+    `dispatch_count`            : open-handoff row count
+    `dispatch_proposed_count`   : rows with a proposed agent
+    `dispatch_unassigned_count` : rows with no roster match
+
+  TODO(auto-mode): an autonomous orchestrator would later call the run path itself
+  on a new event (the design's training-wheels → auto graduation), gated by Inc08
+  governance (rate/concurrency caps, kill switch). For R3 that flip is deliberately
+  NOT wired — see the TODO(auto-mode) in main.dispatch_run + the disabled auto toggle.
+#}
+{% if selected %}
+<div class="center on" data-active-view="dispatch">
+  <div class="dp-wrap">
+
+    {# ---------- page head ---------- #}
+    <div class="dp-head">
+      <div class="dp-title-wrap">
+        <span class="dp-tic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+        </span>
+        <div>
+          <div class="dp-title">Dispatch</div>
+          <div class="dp-sub">
+            <span>{{ selected.display_name or selected.project_key }}</span>
+            <span class="dp-sep" aria-hidden="true">·</span>
+            <span><b>{{ dispatch_count }}</b> open handoff{{ '' if dispatch_count == 1 else 's' }}</span>
+            {% if dispatch_proposed_count %}
+            <span class="dp-sep" aria-hidden="true">·</span>
+            <span><b>{{ dispatch_proposed_count }}</b> proposed</span>
+            {% endif %}
+            {% if dispatch_unassigned_count %}
+            <span class="dp-sep" aria-hidden="true">·</span>
+            <span class="dp-unassigned-ct"><b>{{ dispatch_unassigned_count }}</b> unassigned</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="dp-head-r">
+        {# Live-feed indicator: flips to "live" once the EventSource opens (set by
+           the dispatch JS); starts as "connecting". The dot pulses when live. #}
+        <span class="dp-live" id="dp-live" data-state="connecting">
+          <span class="pulse" aria-hidden="true"></span>
+          <span class="dp-live-txt">connecting · /events</span>
+        </span>
+        <button
+          type="button"
+          class="dp-refresh"
+          hx-get="/views/dispatch?project={{ selected_key }}"
+          hx-target="#center-region"
+          hx-swap="innerHTML"
+          title="Refresh the dispatch queue now"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    {# ---------- MODE banner (read-only; project switch lives on Dashboard) ---------- #}
+    {#
+      Two modes share this view:
+        * PROJECT DISPATCH OFF (default, ship-dark) → PROPOSE-MODE: nothing fires without
+          a human clicking Approve & Run.
+        * PROJECT DISPATCH ON → the orchestrator auto-runs the target agent on each NEW handoff
+          (on your subscription). Change the project switch from the Dashboard.
+    #}
+    <div class="dp-mode {{ 'is-auto' if autonomous_on else '' }}" role="status">
+      <span class="dp-mode-ic" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      </span>
+      <span class="dp-mode-txt">
+        {% if autonomous_on %}
+        <b>Project dispatch ON</b> · the orchestrator auto-runs the target agent on each <i>new</i> handoff for
+        <b>{{ selected.display_name or selected.project_key }}</b> — <i>on your subscription</i>.
+        Manual <b>Approve&nbsp;&amp;&nbsp;Run</b> still works. Change this project-level switch from the
+        <b>Dashboard</b>. Cap: {{ autonomous_cap }} concurrent runs.
+        {% else %}
+        <b>Propose-mode</b> · nothing runs without your approval. The orchestrator only
+        <i>proposes</i> which agent takes each handoff — a dispatch runs only when you click
+        <b>Approve&nbsp;&amp;&nbsp;Run</b>. <b>Project dispatch is OFF</b> (default). Turn it on from the
+        <b>Dashboard</b>.
+        {% endif %}
+      </span>
+      <span class="dp-auto-lab" title="Project dispatch is changed from the Dashboard.">
+        Dashboard control
+      </span>
+    </div>
+
+    {# ---------- consequential warning (only meaningful surface when ON) ---------- #}
+    {% if autonomous_on %}
+    <div class="dp-warn" role="alert">
+      <span class="dp-warn-ic" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      </span>
+      <span class="dp-warn-txt">
+        <b>Project dispatch is live.</b> New pending handoffs are picked up by the orchestrator and run
+        <b>unattended on your subscription</b> (max {{ autonomous_cap }} at once). Each handoff runs
+        once. Turn the switch OFF to stop.
+      </span>
+    </div>
+    {% endif %}
+
+    {# ---------- PROPOSE-MODE: awaiting-approval queue ---------- #}
+    {# When propose_mode is ON, autonomous Dispatch parks handoffs here instead of
+       auto-spawning them. Each row shows the handoff + a one-click Approve button
+       that calls POST /projects/{key}/handoffs/{id}/approve, clears the park record,
+       and lets the next Dispatch sweep spawn it. The approval queue is only shown
+       when at least one handoff is awaiting, regardless of the autonomous toggle. #}
+    {% if awaiting_approval_ids %}
+    <div class="dp-approval-queue" role="region" aria-label="Handoffs awaiting approval">
+      <div class="dp-approval-h">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span><b>{{ awaiting_approval_ids | length }}</b> handoff{{ '' if (awaiting_approval_ids | length) == 1 else 's' }} awaiting your approval</span>
+        <span class="dp-approval-sub">· propose-mode gate is ON — click Approve to let Dispatch spawn the agent</span>
+      </div>
+      <ul class="dp-approval-list">
+        {% for row in dispatch_rows %}
+        {% if row.id in awaiting_approval_ids %}
+        <li class="dp-approval-card">
+          <div class="dp-h-summary">{{ row.summary }}</div>
+          <div class="dp-h-meta">
+            <code class="dp-hid" title="handoff {{ row.compound }}">{{ row.compound }}</code>
+            <span class="dp-sep" aria-hidden="true">·</span>
+            {% if row.proposed %}
+            <span>→ <b>{{ row.proposed.display_name }}</b></span>
+            {% else %}
+            <span class="dp-unassigned-ct">unassigned</span>
+            {% endif %}
+          </div>
+          <form
+            class="dp-approval-form"
+            hx-post="/projects/{{ selected_key }}/handoffs/{{ row.id }}/approve"
+            hx-target="#center-region"
+            hx-swap="innerHTML"
+          >
+            <button type="submit" class="dp-approve-btn" title="Approve — let Dispatch spawn this handoff on the next sweep">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>
+              Approve
+            </button>
+          </form>
+        </li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {# ---------- the dispatch queue ---------- #}
+    {% if dispatch_rows %}
+    <ul class="dp-list">
+      {% for row in dispatch_rows %}
+      <li class="dp-card pri-{{ row.priority }} {{ 'is-unassigned' if not row.proposed else '' }} {{ 'is-awaiting-approval' if row.id in awaiting_approval_ids else '' }}">
+
+        {# left: the handoff (the work waiting) #}
+        <div class="dp-handoff">
+          <div class="dp-h-top">
+            <span class="dp-pri pri-{{ row.priority }}" title="priority">{{ row.priority }}</span>
+            <code class="dp-hid" title="handoff {{ row.compound }}">{{ row.compound }}</code>
+          </div>
+          <div class="dp-h-summary">{{ row.summary }}</div>
+          <div class="dp-h-meta">
+            <span class="dp-h-from" title="raised by">from <b>{{ row.from_agent }}</b></span>
+            <span class="dp-sep" aria-hidden="true">·</span>
+            <span class="dp-h-to" title="handoff target">to <b>{{ row.to_target }}</b></span>
+          </div>
+        </div>
+
+        {# middle: the arrow + proposed agent #}
+        <div class="dp-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </div>
+
+        <div class="dp-proposed">
+          {% if row.proposed %}
+          <div class="dp-prop-head">
+            <span class="dp-prop-av">{{ (row.proposed.display_name[:2] or '··') | upper }}</span>
+            <div class="dp-prop-id">
+              <span class="dp-prop-name">{{ row.proposed.display_name }}</span>
+              <span class="dp-prop-match" title="matched on handoff {{ row.proposed.matched_on }}">via {{ row.proposed.matched_on }}</span>
+            </div>
+          </div>
+          <div class="dp-prop-cfg" title="proposed harness · model">
+            <span class="dp-prop-harness">{{ row.proposed.harness_label or '—' }}</span>
+            <span class="dp-sep" aria-hidden="true">·</span>
+            <span class="dp-prop-model">{{ row.proposed.model or 'default model' }}</span>
+          </div>
+          {% else %}
+          <div class="dp-prop-none" title="no roster agent matches this handoff's target">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+            <span>unassigned <small>no roster match</small></span>
+          </div>
+          {% endif %}
+        </div>
+
+        {# right: Approve & Run (the ONLY thing that fires a dispatch) #}
+        <div class="dp-actions">
+          {% if row.proposed %}
+          <button
+            type="button"
+            class="dp-run"
+            data-run-url="/dispatch/{{ selected_key }}/run?agent_name={{ row.proposed.name }}"
+            data-handoff-id="{{ row.id }}"
+            data-handoff-compound="{{ row.compound }}"
+            data-agent-display="{{ row.proposed.display_name }}"
+            onclick="dispatchApproveRun(this)"
+            title="Spawn {{ row.proposed.display_name }}'s harness on this handoff (runs only on this click)"
+          >
+            <svg class="dp-run-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"/></svg>
+            <span class="dp-spin" aria-hidden="true"></span>
+            <span class="dp-run-lab">Approve &amp; Run</span>
+          </button>
+          {% else %}
+          <button class="dp-run is-disabled" type="button" disabled title="No proposed agent — nothing to run">
+            <svg class="dp-run-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"/></svg>
+            <span class="dp-run-lab">Approve &amp; Run</span>
+          </button>
+          {% endif %}
+        </div>
+
+        {# per-row run output (hidden until Approve & Run streams a reply here) #}
+        <div class="dp-run-out" id="dp-out-{{ row.id }}" hidden>
+          <div class="dp-run-out-h">
+            <span class="dp-run-out-dot" aria-hidden="true"></span>
+            <span class="dp-run-out-lab"></span>
+          </div>
+          <pre class="dp-run-out-body"></pre>
+        </div>
+
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="dp-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <div class="dp-empty-t">No open handoffs</div>
+      <p class="dp-empty-s">Nothing is waiting for dispatch on <b>{{ selected.display_name or selected.project_key }}</b> right now. New handoffs appear here the instant they land — this view is live on the Cortex event feed.</p>
+    </div>
+    {% endif %}
+
+    {# ---------- Orchestrator dispatch-activity feed (ring buffer, newest-first) ---------- #}
+    <div class="dp-activity {{ 'is-on' if autonomous_on else 'is-idle' }}">
+      <div class="dp-activity-h">
+        <span class="dp-activity-dot {{ 'on' if (autonomous_on and autonomous_loop_running) else 'idle' }}" aria-hidden="true"></span>
+        <span class="dp-activity-t">Orchestrator · dispatch activity</span>
+        <span class="dp-activity-meta">
+          {% if autonomous_on %}
+            <b>watching</b> · {{ autonomous_inflight }}/{{ autonomous_cap }} running
+          {% else %}
+            <b>idle</b> · autonomous OFF (spawns nothing)
+          {% endif %}
+        </span>
+      </div>
+
+      {# ---------- WAVE plan strip (E007 Phase 1.5) ----------
+         When the project has a wave plan, show each epic's ACTIVE wave + how many
+         of that wave's handoffs are running vs waiting. Sequential across waves
+         (a wave ≈ an increment): a wave only appears active once all its prior
+         waves complete. No plan → no strip (flat Phase-1 dispatch, unchanged). #}
+      {% if autonomous_waves %}
+      <div class="dp-waves" role="status" aria-label="dependency wave plan">
+        {% for w in autonomous_waves %}
+        <span class="dp-wave {{ 'is-done' if w.active_wave is none else 'is-active' }}"
+              title="Epic {{ w.epic }} — {% if w.active_wave is none %}all waves complete{% else %}active wave {{ w.active_wave }}: {{ w.running }} running, {{ w.waiting }} waiting{% endif %}">
+          <span class="dp-wave-epic">{{ w.epic }}</span>
+          {% if w.active_wave is none %}
+          <span class="dp-wave-state">all waves complete</span>
+          {% else %}
+          <span class="dp-wave-state">wave <b>{{ w.active_wave }}</b></span>
+          <span class="dp-wave-ct">· {{ w.running }} running · {{ w.waiting }} waiting</span>
+          {% endif %}
+        </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if autonomous_activity %}
+      <ul class="dp-activity-list">
+        {% for a in autonomous_activity %}
+        <li class="dp-act dp-act-{{ a.level }} kind-{{ a.kind }}">
+          <span class="dp-act-kind">{{ a.kind | replace('_', ' ') }}</span>
+          <span class="dp-act-txt">{{ a.text }}</span>
+          {% if a.handoff_short %}<code class="dp-act-hid">{{ a.handoff_short }}</code>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="dp-activity-empty">
+        {% if autonomous_on %}
+        The orchestrator is watching this project's handoff feed. Picked-up / running / completed events appear here as they happen.
+        {% else %}
+        Nothing here — project dispatch is <b>OFF</b> for this project. Turn <b>Project dispatch</b> ON from the Dashboard to let the orchestrator auto-run agents on new handoffs.
+        {% endif %}
+      </p>
+      {% endif %}
+    </div>
+
+    <p class="dp-foot-note">
+      Proposals are <b>rule-based</b> (match <code>to_agent</code>, else <code>to_role</code>, against the roster) and show each agent's effective harness · model. With <b>Project dispatch</b> ON, the orchestrator claims each new pending handoff and kicks off the resolved target agent — idempotent (each handoff runs once) and capped at {{ autonomous_cap }} concurrent. Change the project-level switch from the Dashboard. Skill-aware routing + escalation-to-Lead are later phases.
+    </p>
+  </div>
+</div>
+{% else %}
+<div class="center on" data-active-view="dispatch">
+  <div class="dp-wrap"><p class="empty">Select a project to view its dispatch queue.</p></div>
+</div>
+{% endif %}
+
+<script>
+  // ===============================================================
+  //  R3 · DISPATCH — live event feed + Approve & Run (PROPOSE-MODE)
+  // ===============================================================
+  //
+  //  Two concerns, both client-side (main.py stays shell-agnostic):
+  //   1. LIVE FEED — open EventSource('/stream?project=…') (the console proxy
+  //      over Cortex GET /events) and REFRESH this center on a new event. No
+  //      poll. The connection is reset on each dispatch swap (we close the old
+  //      one first) so we never leak sockets across project switches / refreshes.
+  //   2. APPROVE & RUN — the ONLY thing that fires a dispatch. On click it POSTs
+  //      to /dispatch/{project}/run and streams the harness reply into that row's
+  //      output (same SSE-over-fetch reader as the chat composer). Nothing here
+  //      runs on load or on a live event — the human click is the trigger.
+
+  (function () {
+    // The dispatch center root carries the stream + refresh URLs.
+    var root = document.querySelector('.center[data-active-view="dispatch"]');
+    if (!root) return;
+    var streamUrl = root.getAttribute("data-stream-url");
+    var refreshUrl = root.getAttribute("data-refresh-url");
+
+    // ---- live indicator helpers ----
+    function setLive(state, text) {
+      var el = document.getElementById("dp-live");
+      if (!el) return;
+      el.setAttribute("data-state", state);
+      var t = el.querySelector(".dp-live-txt");
+      if (t) t.textContent = text;
+    }
+
+    // ---- refresh this center (re-render the dispatch list) ----
+    // Debounced: a burst of events (e.g. a batch insert) coalesces into one
+    // refresh ~400ms later rather than stomping the DOM per frame.
+    var refreshTimer = null;
+    function scheduleRefresh() {
+      if (!refreshUrl || !window.htmx) return;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(function () {
+        refreshTimer = null;
+        // If a run is actively streaming into a row, hold off (don't blow away
+        // the live output mid-stream); the next event will reschedule.
+        if (document.querySelector(".dp-run.is-running")) {
+          scheduleRefresh();
+          return;
+        }
+        window.htmx.ajax("GET", refreshUrl, {
+          target: "#center-region",
+          swap: "innerHTML",
+        });
+      }, 400);
+    }
+
+    // ---- EventSource lifecycle (one at a time) ----
+    // Stash the source on window so a previous dispatch view's stream is closed
+    // before we open a new one (project switch / manual refresh re-runs this IIFE).
+    if (window.__dpEventSource) {
+      try { window.__dpEventSource.close(); } catch (e) { /* noop */ }
+      window.__dpEventSource = null;
+    }
+    if (streamUrl && "EventSource" in window) {
+      var es = new EventSource(streamUrl);
+      window.__dpEventSource = es;
+      es.onopen = function () { setLive("live", "live · /events"); };
+      // Default + named events both trigger a refresh — we don't parse the
+      // Cortex frame, we just treat "an event arrived" as "the queue changed".
+      es.onmessage = function () { scheduleRefresh(); };
+      // Cortex may emit named events (e.g. event: handoff); catch the common ones.
+      ["handoff", "handoff_created", "decision", "lesson", "task", "cortex_event", "ping"].forEach(function (name) {
+        es.addEventListener(name, function () {
+          if (name === "ping") return; // heartbeat — not a data change
+          scheduleRefresh();
+        });
+      });
+      es.onerror = function () {
+        // The browser auto-reconnects an EventSource; reflect the gap in the pill.
+        setLive("reconnecting", "reconnecting · /events");
+      };
+    } else {
+      setLive("off", "live feed unavailable");
+    }
+  })();
+
+  // ---- Approve & Run (the human-in-the-loop dispatch trigger) ----
+  // PROPOSE-MODE: a dispatch runs ONLY from this click handler. It is never
+  // called on page load or on a live event.
+  async function dispatchApproveRun(btn) {
+    if (!btn || btn.classList.contains("is-running")) return;
+    var runUrl = btn.getAttribute("data-run-url");
+    var hid = btn.getAttribute("data-handoff-id");
+    var compound = btn.getAttribute("data-handoff-compound") || hid;
+    var who = btn.getAttribute("data-agent-display") || "Agent";
+    var card = btn.closest(".dp-card");
+    if (!runUrl || !card) return;
+
+    // Find the handoff summary (the work the agent acts on) from the card.
+    var sumEl = card.querySelector(".dp-h-summary");
+    var summary = sumEl ? (sumEl.textContent || "").trim() : "";
+
+    var out = document.getElementById("dp-out-" + hid);
+    var body = out ? out.querySelector(".dp-run-out-body") : null;
+    var lab = out ? out.querySelector(".dp-run-out-lab") : null;
+    if (out) { out.hidden = false; out.classList.remove("is-error"); }
+    if (lab) { lab.textContent = "Running " + who + " on " + compound + "…"; }
+    if (body) { body.textContent = ""; }
+
+    // Running state is conveyed by a CSS class (no innerHTML): the label flips to
+    // "Running…" and a spinner shows via .is-running styling.
+    var runLab = btn.querySelector(".dp-run-lab");
+    var origLabel = runLab ? runLab.textContent : "";
+    btn.classList.add("is-running");
+    btn.disabled = true;
+    if (runLab) { runLab.textContent = "Running…"; }
+
+    var assembled = "";
+    var gotText = false;
+    var resultText = "";
+
+    try {
+      var resp = await fetch(runUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "text/event-stream",
+        },
+        body:
+          "summary=" + encodeURIComponent(summary) +
+          "&handoff_id=" + encodeURIComponent(hid || "") +
+          "&handoff_compound=" + encodeURIComponent(compound || ""),
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error("dispatch request failed (" + resp.status + ")");
+      }
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (var i = 0; i < parts.length; i++) {
+          var frame = parts[i];
+          if (!frame.trim()) continue;
+          var ev = "message", data = "";
+          var lines = frame.split("\n");
+          for (var j = 0; j < lines.length; j++) {
+            var ln = lines[j];
+            if (ln.indexOf("event:") === 0) ev = ln.slice(6).trim();
+            else if (ln.indexOf("data:") === 0) data += ln.slice(5).trim();
+          }
+          var payload = {};
+          try { payload = data ? JSON.parse(data) : {}; } catch (e) { payload = {}; }
+
+          if (ev === "delta") {
+            assembled += (payload.text || "");
+            gotText = true;
+            if (body) { body.textContent = assembled; }
+          } else if (ev === "result") {
+            resultText = payload.text || "";
+          } else if (ev === "error") {
+            if (lab) { lab.textContent = "Error · " + who; }
+            if (body) { body.textContent = payload.message || "The harness reported an error."; }
+            if (out) { out.classList.add("is-error"); }
+          } else if (ev === "done") {
+            /* stream finished */
+          }
+        }
+      }
+      if (!gotText && resultText && body) { body.textContent = resultText; }
+      if (lab && out && !out.classList.contains("is-error")) {
+        lab.textContent = "Done · " + who + " on " + compound;
+      }
+    } catch (err) {
+      if (lab) { lab.textContent = "Could not reach the harness"; }
+      if (body) { body.textContent = (err && err.message) ? err.message : String(err); }
+      if (out) { out.classList.add("is-error"); }
+    } finally {
+      btn.classList.remove("is-running");
+      btn.disabled = false;
+      if (runLab) { runLab.textContent = origLabel; }
+    }
+  }
+</script>

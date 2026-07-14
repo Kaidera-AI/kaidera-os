@@ -1,0 +1,25 @@
+{#
+  SETTINGS sub-tab placeholder (R4a). Rendered for the three tabs that aren't
+  functional yet — Configure (R4c), Providers & Models (R4b), Cortex (R4c).
+  Clean, labeled card stating the section + the increment it lands in. Reuses
+  the prototype's `.set-stub` styling.
+
+  Context:
+    placeholder_label     : the tab's human label (e.g. "Providers & Models")
+    placeholder_increment : the increment it's slated for (e.g. "R4b")
+#}
+<div class="set-inner">
+  <div class="set-page on">
+    <div class="set-page-h">{{ placeholder_label }}</div>
+    <div class="set-page-sub">This settings section isn't wired yet — the <b>System</b> tab is the R4a slice.</div>
+
+    <div class="set-stub">
+      <div class="ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
+      </div>
+      <h4>{{ placeholder_label }}</h4>
+      <p>Wiring in <b>{{ placeholder_increment }}</b>. The console-local settings store + the System editor land first; this section follows.</p>
+      <span class="soon-pill">{{ placeholder_increment }}</span>
+    </div>
+  </div>
+</div>

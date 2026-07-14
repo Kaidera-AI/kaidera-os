@@ -1,0 +1,35 @@
+# better-code-review-graph reads this file, not .gitignore.
+.code-review-graph/*
+.code-review-graph/**
+
+# Local operator/runtime output
+beat/logs/*
+beat/logs/**
+local-cortex/logs/*
+local-cortex/logs/**
+output/*
+output/**
+
+# Historical snapshots, research clones, and editor plugin bundles
+local-cortex/snapshots/*
+local-cortex/snapshots/**
+scratch/*
+scratch/**
+.obsidian/plugins/*
+.obsidian/plugins/**
+.agents/data/vendor/*
+.agents/data/vendor/**
+
+# Python/runtime caches
+*/__pycache__/*
+*/__pycache__/**
+.pytest_cache/*
+.pytest_cache/**
+
+# Binary/archive source material kept for provenance, not code graphing
+*.pdf
+*.tgz
+*.zip
+*.tar
+*.tar.gz
+*.pack

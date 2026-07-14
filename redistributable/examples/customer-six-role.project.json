@@ -1,0 +1,150 @@
+{
+  "schema_version": "1.0",
+  "preset": "generic-six-role",
+  "project": {
+    "key": "customer-project",
+    "name": "Customer Project",
+    "root": "${CORTEX_PROJECT_ROOT}",
+    "team_name": "Customer Project Team",
+    "scope": "Customer-specific delivery work. Replace this with the customer's domain, goals, and constraints."
+  },
+  "roles": [
+    {
+      "slug": "lead",
+      "label": "Lead Worker",
+      "responsibilities": "Own the user conversation, clarify goals, acceptance, and priority decisions.",
+      "standard": true
+    },
+    {
+      "slug": "backend",
+      "label": "Backend Worker",
+      "responsibilities": "Backend systems, services, APIs, and data integration.",
+      "standard": true
+    },
+    {
+      "slug": "frontend",
+      "label": "Frontend Worker",
+      "responsibilities": "Frontend implementation, user workflows, and UI verification.",
+      "standard": true
+    },
+    {
+      "slug": "qa",
+      "label": "QA Worker",
+      "responsibilities": "Verification, regression tests, and release gates.",
+      "standard": true
+    },
+    {
+      "slug": "knowledge",
+      "label": "Knowledge Worker",
+      "responsibilities": "Docs, decisions, project memory, and knowledge ingestion.",
+      "standard": true
+    },
+    {
+      "slug": "coordinator",
+      "label": "Coordinator Worker",
+      "responsibilities": "Heartbeat, progress tracking, and handoff monitoring.",
+      "standard": true
+    }
+  ],
+  "agents": [
+    {
+      "name": "lead",
+      "role": "lead",
+      "display_name": "Lead",
+      "responsibilities": "Own the user conversation, clarify goals, acceptance, and priority decisions.",
+      "harness": "kaidera",
+      "capabilities": {
+        "designation": "interactive",
+        "persona_brief": "Customer-specific delivery work. Replace this with the customer's domain, goals, and constraints."
+      },
+      "pane": {
+        "title": "Lead",
+        "color": "green",
+        "order": 0
+      }
+    },
+    {
+      "name": "backend",
+      "role": "backend",
+      "display_name": "Backend",
+      "responsibilities": "Backend systems, services, APIs, and data integration.",
+      "harness": "kaidera",
+      "pane": {
+        "title": "Backend",
+        "color": "red",
+        "order": 1
+      }
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "display_name": "Frontend",
+      "responsibilities": "Frontend implementation, user workflows, and UI verification.",
+      "harness": "kaidera",
+      "pane": {
+        "title": "Frontend",
+        "color": "blue",
+        "order": 2
+      }
+    },
+    {
+      "name": "qa",
+      "role": "qa",
+      "display_name": "QA",
+      "responsibilities": "Verification, regression tests, and release gates.",
+      "harness": "kaidera",
+      "pane": {
+        "title": "QA",
+        "color": "yellow",
+        "order": 3
+      }
+    },
+    {
+      "name": "knowledge",
+      "role": "knowledge",
+      "display_name": "Knowledge",
+      "responsibilities": "Docs, decisions, project memory, and knowledge ingestion.",
+      "harness": "kaidera",
+      "pane": {
+        "title": "Knowledge",
+        "color": "magenta",
+        "order": 4
+      }
+    },
+    {
+      "name": "coordinator",
+      "role": "coordinator",
+      "display_name": "Coordinator",
+      "responsibilities": "Heartbeat, progress tracking, and handoff monitoring.",
+      "harness": "kaidera",
+      "pane": {
+        "title": "Coordinator",
+        "color": "cyan",
+        "order": 5
+      }
+    }
+  ],
+  "model_requirements": [
+    {
+      "type": "llm",
+      "required": true,
+      "purpose": "Main agent chat and reasoning model."
+    },
+    {
+      "type": "embedding",
+      "required": true,
+      "purpose": "Semantic search over Cortex memory."
+    },
+    {
+      "type": "reranking",
+      "required": true,
+      "purpose": "Post-retrieval reranking."
+    }
+  ],
+  "beat": {
+    "orchestrator_agent": "coordinator",
+    "cadence_minutes": 25,
+    "progress_provider": "markdown-file",
+    "progress_file": "PROGRESS.md"
+  }
+}

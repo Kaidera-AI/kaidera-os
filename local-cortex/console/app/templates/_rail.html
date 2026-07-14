@@ -1,0 +1,83 @@
+{#
+  COLUMN 1 — project rail (switcher). One row per real active project with a
+  cross-project "needs attention" line (pending handoffs + active tasks from
+  /state). Clicking a row scopes the whole UI to that project via HTMX (swaps
+  the agents column + center together).
+
+  `projects`     : active projects (from /projects)
+  `attention`    : {project_key: {"pending": int|None, "tasks": int|None}}
+  `selected_key` : the currently-scoped project
+#}
+<aside class="rail" aria-label="Projects">
+  <div class="rail-scroll">
+
+    <div class="rail-label">
+      Projects <span class="count">{{ projects | length }}</span>
+    </div>
+
+    {% if projects %}
+    <nav class="rail-projects" aria-label="Project switcher">
+      {% for p in projects %}
+      {% set att = attention.get(p.project_key, {}) %}
+      {% set pending = att.get("pending") %}
+      {% set tasks = att.get("tasks") %}
+      {#
+        Pick a per-project glyph tint by hashing the key into one of four brand
+        swatches (purely cosmetic, matches the prototype's coloured pico chips).
+      #}
+      {% set pico = ["mk","en","ev","mk2"][ (p.project_key | length) % 4 ] %}
+      <button
+        type="button"
+        class="proj {{ 'active' if p.project_key == selected_key else '' }}"
+        data-project-key="{{ p.project_key }}"
+        hx-get="/projects/{{ p.project_key }}"
+        hx-target="#scope-region"
+        hx-swap="innerHTML"
+        title="{{ p.repo_root }}"
+      >
+        <span class="pico {{ pico }}">{{ (p.display_name or p.project_key)[:1] | upper }}</span>
+        <span class="pmeta">
+          <span class="pname">{{ p.display_name or p.project_key }}</span>
+          <span class="phint">{{ p.project_key }} · {{ p.agent_count }} agent{{ '' if p.agent_count == 1 else 's' }}</span>
+          {#
+            Needs-attention summary line: "<n> pending · <n> tasks". Falls back
+            to em-dash counts when /state was unreachable for that project.
+          #}
+          <span class="pattn">
+            <span class="pa-n {{ 'warn' if pending and pending > 0 else '' }}">{{ pending if pending is not none else "—" }}</span> pending
+            <span class="pa-sep" aria-hidden="true">·</span>
+            <span class="pa-n">{{ tasks if tasks is not none else "—" }}</span> task{{ '' if tasks == 1 else 's' }}
+          </span>
+        </span>
+        <span class="pstat">
+          {% if pending and pending > 0 %}
+          <span class="badge-q {{ 'alert' if pending >= 100 else '' }}" title="{{ pending }} pending handoffs">{{ pending if pending < 1000 else '999+' }}</span>
+          {% endif %}
+          <span class="dot {{ 'run' if (tasks and tasks > 0) else 'idle' }}" aria-hidden="true"></span>
+        </span>
+      </button>
+      {% endfor %}
+    </nav>
+    {% else %}
+    <p class="rail-empty">No active projects returned by Cortex.</p>
+    {% endif %}
+
+    <div class="rail-divider" aria-hidden="true"></div>
+
+    <div class="rail-label">Workspace</div>
+    <p class="rail-note">
+      Switch sections from the tabs in the top bar — Dashboard is live now;
+      History, Graph, Analytics, and Settings arrive in later increments.
+    </p>
+  </div>
+
+  {# Identity footer — matches the prototype's rail-foot. Read-only console
+     reader; "CTO · local" is the operator persona, not a Cortex write identity. #}
+  <div class="rail-foot">
+    <div class="avatar">AM</div>
+    <div class="rf-who">
+      <div class="who">Amad</div>
+      <div class="role">CTO · local</div>
+    </div>
+  </div>
+</aside>

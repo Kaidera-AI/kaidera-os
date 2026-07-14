@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "generated_for_release": "0.1.227",
+  "description": "Slim offline help starter for the Kaidera OS console. The in-app Help view bundles only the setup essentials; the full guide corpus is configured with KAIDERA_OS_DOCS_URL.",
+  "topics": [
+    { "id": "getting-started", "label": "Getting Started", "eyebrow": "first run" },
+    { "id": "first-project", "label": "First Project", "eyebrow": "onboarding" },
+    { "id": "settings", "label": "Settings", "eyebrow": "configuration" }
+  ],
+  "guides": [
+    {
+      "id": "getting-started",
+      "topic": "getting-started",
+      "title": "Getting started with Kaidera OS",
+      "file": "guides/getting-started.md",
+      "summary": "Install, run the console, sign in, and learn the layout before you configure anything.",
+      "keywords": ["install", "run", "start", "login", "layout", "console", "first run", "setup"]
+    },
+    {
+      "id": "first-project",
+      "topic": "first-project",
+      "title": "Bring your first project online",
+      "file": "guides/first-project.md",
+      "summary": "Register a project, set repo roots, seed the roster, and pick the default agent.",
+      "keywords": ["project", "register", "repo root", "roster", "default agent", "onboarding", "first project"]
+    },
+    {
+      "id": "settings",
+      "topic": "settings",
+      "title": "Settings deep-dive",
+      "file": "guides/settings.md",
+      "summary": "The System, Cortex, Workspace, and Extensions surfaces and exactly what to configure in each.",
+      "keywords": ["settings", "system", "cortex", "workspace", "extensions", "repo root", "configure", "app db"]
+    }
+  ]
+}

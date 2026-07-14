@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Kaidera AI-side Kaidera OS license generator - signs a KAIDERA_OS_LICENSE_KEY for a customer.
+#
+# Usage:
+#   KAIDERA_OS_LICENSE_VERIFY_KEY="<the signing secret>" \
+#     scripts/kaidera-os-license-gen "<customer name>" [days] [feature,feature,...]
+#
+# The SAME KAIDERA_OS_LICENSE_VERIFY_KEY must be baked into the shipped build (so the app
+# verifies what this signs). Keep the signing secret OFF customer machines + out of git.
+# Hand the printed token to the customer as KAIDERA_OS_LICENSE_KEY. See app/license.py.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+PY="$CONSOLE/.venv/bin/python"; [ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+cd "$CONSOLE"
+exec "$PY" - "$@" <<'PY'
+import sys
+from app.license import generate_license
+customer = sys.argv[1] if len(sys.argv) > 1 else ""
+if not customer:
+    sys.exit("usage: kaidera-os-license-gen <customer> [days] [feat,feat]")
+days = int(sys.argv[2]) if len(sys.argv) > 2 else 365
+features = sys.argv[3].split(",") if len(sys.argv) > 3 else None
+print(generate_license(customer, days=days, features=features))
+PY

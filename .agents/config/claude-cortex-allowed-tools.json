@@ -1,0 +1,27 @@
+{
+  "schema": "cortex.claude.allowed-tools.v1",
+  "description": "Core Cortex CLI commands pre-approved for Claude headless/managed Kaidera OS sessions. The harness passes these per invocation via --allowedTools so fresh machines and worktrees do not depend on manual ~/.claude settings edits.",
+  "allowed_tools": [
+    "Bash(cortex-handoff)",
+    "Bash(cortex-handoff *)",
+    "Bash(cortex-log)",
+    "Bash(cortex-log *)",
+    "Bash(cortex-bootstrap)",
+    "Bash(cortex-bootstrap *)",
+    "Bash(cortex-boot)",
+    "Bash(cortex-boot *)",
+    "Bash(cortex-search)",
+    "Bash(cortex-search *)",
+    "Bash(cortex-graph-search)",
+    "Bash(cortex-graph-search *)",
+    "Bash(cortex-entities)",
+    "Bash(cortex-entities *)",
+    "Bash(cortex-roster)",
+    "Bash(cortex-roster *)"
+  ],
+  "extension_env": "CORTEX_CLAUDE_ALLOWED_TOOLS_EXTRA",
+  "non_goals": [
+    "Do not use --dangerously-skip-permissions by default.",
+    "Do not require user-level ~/.claude/settings.json edits for this core surface."
+  ]
+}

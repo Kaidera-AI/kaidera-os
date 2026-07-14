@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "kind": "kaidera-os.project-pack",
+  "pack": {
+    "key": "basic-project-pack",
+    "name": "Basic Project Pack",
+    "version": "0.1.0",
+    "description": "A minimal project pack manifest used to validate the Kaidera OS extension lifecycle contract."
+  },
+  "project": {
+    "default_key": "customer-project"
+  },
+  "extensions": [
+    {
+      "module": "basic_project_pack.example_worker",
+      "required": false,
+      "description": "Optional console extension module loaded only when explicitly enabled."
+    }
+  ],
+  "portals": [
+    {
+      "key": "operator-chat",
+      "type": "thin-web",
+      "agent": "lead",
+      "route_prefix": "/portal/operator-chat",
+      "auth": "kaidera-os-auth",
+      "stream_contract": "runstate-sse",
+      "frontend_path": "portal/index.html",
+      "docker_context": "portal",
+      "required": false,
+      "description": "Optional thin portal metadata. The package owns branding and UI; Kaidera OS owns auth, permissions, streaming, and replay."
+    }
+  ],
+  "assets": [
+    {
+      "path": "agent-config/system-prompt.md",
+      "type": "agent_prompt",
+      "required": true,
+      "description": "Agent prompt or steering text installed for this project only."
+    },
+    {
+      "path": "cortex-seed/README.md",
+      "type": "cortex_seed",
+      "required": true,
+      "description": "Seed knowledge that can be ingested into the selected project scope."
+    },
+    {
+      "path": "portal/index.html",
+      "type": "frontend",
+      "required": true,
+      "description": "Example package-owned thin portal asset."
+    },
+    {
+      "path": "portal/Dockerfile",
+      "type": "frontend",
+      "required": true,
+      "description": "Example package-owned thin portal container context."
+    },
+    {
+      "path": "basic_project_pack/__init__.py",
+      "type": "extension",
+      "required": true,
+      "description": "Example package-owned Python extension namespace."
+    },
+    {
+      "path": "basic_project_pack/example_worker.py",
+      "type": "extension",
+      "required": true,
+      "description": "Example package-owned Python extension module loaded from the installed pack root."
+    }
+  ],
+  "install": {
+    "copy_to": "operator-selected",
+    "enable_extensions_env": "KAIDERA_OS_EXTENSION_MODULES",
+    "cortex_seed_glob": "cortex-seed/*.md",
+    "notes": "Validation only in this release; install/apply remains explicit operator work."
+  }
+}

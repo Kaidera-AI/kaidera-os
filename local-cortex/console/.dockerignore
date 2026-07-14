@@ -1,0 +1,38 @@
+# Docker build context excludes for the headless console image (M1 T13).
+# Keep the context tiny + the image clean: only `app/` + requirements.txt are
+# COPYed by the Dockerfile. Everything below is dev/desktop/test-only.
+
+# Python local envs + caches
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# SPA (Track C) — the node build stage installs deps fresh (`npm ci`) and builds
+# `dist/` itself, so the host's node_modules + any local dist are dead weight in the
+# context AND must not leak into the build. The spa/ SOURCE (package.json, lockfile,
+# src/, index.html, public/, tsconfig*, vite.config.ts) IS sent — only these two are
+# excluded. (Patterns are relative to the build context = the console dir.)
+spa/node_modules/
+spa/dist/
+
+# Desktop-packaging path (pywebview/pyinstaller) — NOT used headless
+bootstrap.py
+console.spec
+requirements-build.txt
+build/
+dist/
+app.icns
+app.iconset/
+
+# Tests + config/docs not needed at runtime
+tests/
+config/
+*.md
+.gitignore
+.DS_Store
+
+# The Dockerfile + its ignore file themselves
+Dockerfile
+.dockerignore

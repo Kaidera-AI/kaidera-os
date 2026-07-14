@@ -1,0 +1,224 @@
+{#
+  COLUMN 2 — the project-scoped left column, stacked top → bottom:
+    1. Agents   (active/interactive: pick + configure agents)  — FIRST, scrolls
+    2. Metrics  (informational: compact stat block for the project)
+    3. Active Epic (informational: best-effort epic summary)    — BOTTOM
+
+  Agents data (from /runtime, falling back to /roster) is grouped Interactive
+  (Lead) vs AI Workers server-side (main._group_agents). Metrics + epic are also
+  derived server-side (main._metrics_view / _epic_view); these templates are
+  pure presentation.
+
+  `selected`      : the selected project record (for the scope chip)
+  `selected_key`  : project key
+  `agent_groups`  : {"interactive": [view, ...], "autonomous": [view, ...]}
+  `agent_count`   : total agents
+  `metrics`       : {active_tasks, pending_tasks, pending_handoffs, events_24h}
+  `epic`          : {mode, epics[], epic_count, label?} — LIVE from GET /epics
+                    (main._epic_view). mode='epics' renders the epic stack;
+                    'continuous' renders the 'continuous · no epics' line.
+  Each agent view: name, display_name, initials, role, model, harness, thinking,
+  writer_scope, capabilities[], row_sub, is_test, interactive, cpo_tag,
+  designation_override.
+
+  Classification is OVERRIDE-FIRST (main._classify_interactive): a console
+  `designation` override ("interactive"/"autonomous", set per agent in the
+  Settings → Configure card) wins; absent that, the registry-derived heuristic
+  (role/capability cpo/lead markers) decides. `cpo_tag` flags an Interactive
+  agent whose effective role reads as lead (renders a small "Lead" tag).
+#}
+{#
+  One agent row. The whole row is a button: clicking it swaps the CENTER
+  (#center-region) to this agent's detail view (GET /agents/{key}/{name}) and
+  highlights the row. The col-2 column itself is NOT re-rendered, so the
+  highlight is re-applied client-side (console.html syncAgent) off the swapped
+  center's data-selected-agent marker; we also flip .is-open optimistically on
+  click so the press feels instant.
+#}
+{% macro agent_row(a, det) %}
+<button
+  type="button"
+  class="ag {{ 'pinned' if det else '' }}"
+  data-agent-key="{{ a.name }}"
+  hx-get="/agents/{{ selected_key }}/{{ a.name }}"
+  hx-target="#center-region"
+  hx-swap="innerHTML"
+  onclick="markAgentOpen(this)"
+  title="Open {{ a.display_name }} — detail + recent activity"
+>
+  <span class="ag-row">
+    <span class="ag-ava {{ 'det' if det else '' }}">
+      {{ a.initials }}
+      <span class="pres {{ 'run' if det else 'idle' }}" aria-hidden="true"></span>
+    </span>
+    <span class="ag-mid">
+      <span class="ag-name-row">
+        <span class="ag-name">{{ a.display_name }}{% if a.cpo_tag %}<span class="cpo-tag" title="Interactive lead — the agent you talk to">Lead</span>{% endif %}{% if a.is_test %}<span class="test-tag" title="name matches a test/pollution pattern (hint, not authority)">test?</span>{% endif %}</span>
+        <span class="ag-type {{ 'det' if det else '' }}">{{ a.role }}</span>
+      </span>
+      <span class="ag-sub" title="{{ a.row_sub }}">{{ a.row_sub }}</span>
+      {% if a.capabilities %}
+      <span class="ag-caps">
+        {% for c in a.capabilities %}<span class="cap">{{ c }}</span>{% endfor %}
+      </span>
+      {% endif %}
+    </span>
+    <span class="ag-right">
+      <span class="ag-scope" title="writer scope">{{ a.writer_scope or "—" }}</span>
+      <svg class="ag-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </span>
+  </span>
+</button>
+{% endmacro %}
+
+<div class="col2">
+
+{# ============ 1 · AGENTS (top, unchanged) — pick + configure agents ============ #}
+<aside class="agents" aria-label="Agents">
+  <div class="agents-head">
+    <span class="title">Agents</span>
+    <span class="scope" title="scoped project">{{ selected_key or "—" }}</span>
+    <span class="refresh"><span class="pulse" aria-hidden="true"></span> {{ agent_count }}</span>
+  </div>
+
+  <div class="agents-scroll">
+    {% set interactive = agent_groups.interactive %}
+    {% set autonomous = agent_groups.autonomous %}
+
+    {# ---- Interactive lead — the agents you talk to ---- #}
+    <div class="grp-label">
+      <span class="lead-run">Interactive · Lead</span>
+      <span class="n">{{ interactive | length }}</span>
+      <span class="rule" aria-hidden="true"></span>
+    </div>
+    <div class="grp-note">The lead you talk to — sets goals and dispatches the rest.</div>
+    {% if interactive %}
+      {% for a in interactive %}{{ agent_row(a, True) }}{% endfor %}
+    {% else %}
+      <p class="grp-empty">No interactive lead agents in this project.</p>
+    {% endif %}
+
+    {# ---- AI Workers — non-interactive model-backed workers + deterministic agents ---- #}
+    <div class="grp-label">
+      <span class="lead-det">AI Workers</span>
+      <span class="n">{{ autonomous | length }}</span>
+      <span class="rule" aria-hidden="true"></span>
+    </div>
+    <div class="grp-note">Non-interactive AI workers and deterministic project agents.</div>
+    {% if autonomous %}
+      {% for a in autonomous %}{{ agent_row(a, False) }}{% endfor %}
+    {% else %}
+      <p class="grp-empty">No AI workers in this project.</p>
+    {% endif %}
+  </div>
+</aside>
+
+{# ============ 2 · METRICS (informational) — compact stat block ============ #}
+{#
+  Moved here from the center vitals strip. Sized for a narrow column: small
+  chips, not the big center cards. Numbers are derived server-side
+  (main._metrics_view): active/pending handoffs + events/24h off /state,
+  pending tasks off /board. A None counter shows '—'.
+#}
+<section class="metrics" aria-label="Project metrics">
+  <div class="metrics-head">
+    <span class="title">Metrics</span>
+    {% if selected_key %}<span class="scope" title="scoped project">{{ selected_key }}</span>{% endif %}
+    {#
+      Drill-in link → swaps the CENTER to this project's detail view (full open
+      handoffs + tasks lists). The Metrics block shows the counts; this opens the
+      lists. Only rendered when a project is scoped.
+    #}
+    {% if selected_key %}
+    <button
+      type="button"
+      class="metrics-drill"
+      hx-get="/projects/{{ selected_key }}/detail"
+      hx-target="#center-region"
+      hx-swap="innerHTML"
+      title="Open {{ selected_key }} — full handoffs + tasks"
+    >
+      details
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    {% endif %}
+  </div>
+  <div class="metric-grid">
+    <div class="metric">
+      <span class="metric-num">{{ metrics.active_tasks if metrics.active_tasks is not none else "—" }}</span>
+      <span class="metric-label">Active tasks</span>
+    </div>
+    <div class="metric">
+      <span class="metric-num">{{ metrics.pending_tasks if metrics.pending_tasks is not none else "—" }}</span>
+      <span class="metric-label">Pending tasks</span>
+    </div>
+    <div class="metric">
+      <span class="metric-num">{{ metrics.pending_handoffs if metrics.pending_handoffs is not none else "—" }}</span>
+      <span class="metric-label">Pending handoffs</span>
+    </div>
+    <div class="metric">
+      <span class="metric-num">{{ metrics.events_24h if metrics.events_24h is not none else "—" }}</span>
+      <span class="metric-label">Events · 24h</span>
+    </div>
+  </div>
+</section>
+
+{# ============ 3 · ACTIVE EPIC (informational, bottom) ============ #}
+{#
+  LIVE epic data from GET /epics (shaped server-side in main._epic_view —
+  templates do no logic). mode='epics' → a compact stack of the project's
+  epic(s), active/build epic FIRST: each shows epic_id · title · overall % bar ·
+  per-increment mini-bars (done=green / prog=teal / todo=empty). mode='continuous'
+  → the 'continuous · no epics' line (continuous-backlog projects like
+  Marketing/BPA, projects with no epics, OR a graceful-degrade when /epics is
+  unreachable — never fabricated progress).
+
+  `epic` = {mode, epics:[{epic_id,title,status,overall_pct,increments:[{label,
+  pct,status,kind}],is_active,increment_count}], epic_count, label?}
+#}
+<section class="epic mode-{{ epic.mode }}" aria-label="Active epic">
+  <div class="epic-head">
+    <span class="title">Active Epic</span>
+    {% if epic.mode == 'epics' %}
+    <span class="epic-count" title="epics on this project">{{ epic.epic_count }}</span>
+    {% else %}
+    <span class="epic-soon" title="continuous backlog — no epic structure">continuous</span>
+    {% endif %}
+  </div>
+
+  {% if epic.mode == 'epics' %}
+  <div class="epic-stack">
+    {% for e in epic.epics %}
+    <div class="epic-card {{ 'is-active' if e.is_active else '' }}" title="{{ e.title }}">
+      <div class="ec-top">
+        <span class="ec-eid">{{ e.epic_id }}</span>
+        <span class="ec-title">{{ e.title }}</span>
+        <span class="ec-pct">{{ e.overall_pct }}%</span>
+      </div>
+      <div class="ec-track" role="progressbar" aria-valuenow="{{ e.overall_pct }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ e.epic_id }} overall progress">
+        <div class="ec-fill {{ 'ok' if e.overall_pct == 100 else '' }}" style="width: {{ e.overall_pct }}%"></div>
+      </div>
+      {% if e.increments %}
+      <div class="ec-incs">
+        {% for inc in e.increments %}
+        <span
+          class="ec-inc k-{{ inc.kind }}"
+          title="Inc{{ inc.num }} · {{ inc.title }} — {{ inc.status or 'not started' }} ({{ inc.pct }}%)"
+        >
+          <span class="ec-inc-bar"><span class="ec-inc-fill" style="width: {{ inc.pct }}%"></span></span>
+        </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="epic-body">
+    <span class="epic-dot" aria-hidden="true"></span>
+    <span class="epic-line">{{ epic.label }}</span>
+  </div>
+  {% endif %}
+</section>
+
+</div>{# /.col2 #}

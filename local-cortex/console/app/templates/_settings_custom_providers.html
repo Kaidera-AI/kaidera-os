@@ -1,0 +1,133 @@
+{#
+  SETTINGS · System → CUSTOM PROVIDERS (Task 4). The operator-managed,
+  open-ended set of provider credentials (name + base URL + masked API key),
+  separate from the fixed built-in provider-key fields above. Persisted OUTSIDE
+  the schema under `custom_providers` (app.settings) and preserved across every
+  System save.
+
+  This whole region is one HTMX swap target (#sys-custom-providers): adding or
+  removing a provider POSTs and swaps the refreshed list back in. The stored API
+  key is NEVER rendered — a configured key shows as the "•••• set" mask, exactly
+  like the built-in secret fields.
+
+  Context:
+    custom_providers : [{id, name, base_url, has_key, key_display}] (masked)
+    cp_added         : name of a just-added provider (success flash) | None
+    cp_removed       : truthy if a provider was just removed
+    cp_error         : error string (add/remove failure) | None
+    selected_key     : current project key (kept on the POST query string)
+#}
+<div id="sys-custom-providers" class="cp-region">
+
+  {# inline status flash after an add / remove #}
+  {% if cp_error %}
+  <div class="set-banner sys-saved err" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+    <div><b>Couldn't save.</b> {{ cp_error }}</div>
+  </div>
+  {% elif cp_added %}
+  <div class="set-banner secure sys-saved ok" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+    <div><b>Added.</b> <code>{{ cp_added }}</code> saved to the console app-DB — key stored masked.</div>
+  </div>
+  {% elif cp_removed %}
+  <div class="set-banner sys-saved ok" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+    <div><b>Removed.</b> Custom provider deleted from the local store.</div>
+  </div>
+  {% endif %}
+
+  {# existing custom providers — name · base URL · masked key · remove #}
+  {% if custom_providers %}
+  <div class="cp-list">
+    {% for p in custom_providers %}
+    <div class="cp-row">
+      <span class="cp-ic" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3M16 7l3 3M14 9l2 2"/></svg>
+      </span>
+      <span class="cp-meta">
+        <span class="cp-name">{{ p.name }}</span>
+        {% if p.base_url %}<span class="cp-url">{{ p.base_url }}</span>{% endif %}
+      </span>
+      <span class="cp-key {{ 'set' if p.has_key else 'none' }}">
+        {{ p.key_display if p.has_key else 'no key' }}
+      </span>
+      {# Test — probe {base_url}/models with the stored key (OpenAI-compatible). #}
+      {% if p.has_key %}
+      <button
+        class="cp-test"
+        type="button"
+        title="Test this provider's key"
+        hx-post="/settings/system/test-key?project={{ selected_key or '' }}"
+        hx-vals='{"field": "custom:{{ p.id }}"}'
+        hx-target="#keytest-cp-{{ p.id }}"
+        hx-swap="innerHTML"
+        hx-disabled-elt="this"
+      >Test</button>
+      <span class="keytest-slot" id="keytest-cp-{{ p.id }}"></span>
+      {% endif %}
+      <button
+        class="cp-del"
+        type="button"
+        title="Remove provider"
+        aria-label="Remove {{ p.name }}"
+        hx-post="/settings/system/custom-provider/delete?project={{ selected_key or '' }}"
+        hx-vals='{"cp_id": "{{ p.id }}"}'
+        hx-target="#sys-custom-providers"
+        hx-swap="outerHTML"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="cp-empty">No custom providers yet — add one below.</div>
+  {% endif %}
+
+  {#
+    "+ Add provider" affordance. The button reveals an inline add form (pure CSS
+    via a hidden checkbox toggle — no JS needed). The form POSTs name + base URL +
+    API key; the API key field is masked on type (password input). On success the
+    server swaps this whole region back in, which resets the form + collapses it.
+  #}
+  <input type="checkbox" id="cp-add-toggle" class="cp-add-toggle" />
+  <label for="cp-add-toggle" class="cp-add-btn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    <span>Add provider</span>
+  </label>
+
+  <div class="cp-add-form">
+    <div class="cp-field">
+      <label class="cp-lbl" for="cp-name">Provider name</label>
+      <input class="set-input" type="text" id="cp-name" name="cp_name" form="cp-add"
+             placeholder="e.g. Together AI" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="cp-field">
+      <label class="cp-lbl" for="cp-base-url">Base URL</label>
+      <input class="set-input" type="text" id="cp-base-url" name="cp_base_url" form="cp-add"
+             placeholder="https://api.together.xyz/v1" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="cp-field">
+      <label class="cp-lbl" for="cp-api-key">API key</label>
+      <input class="set-input" type="password" id="cp-api-key" name="cp_api_key" form="cp-add"
+             placeholder="enter a key…" autocomplete="off" spellcheck="false" />
+    </div>
+    {#
+      The form element carries the HTMX attrs; the inputs above reference it via
+      form="cp-add" so the layout can place them in a grid while still submitting
+      together. Submit swaps the refreshed region back into #sys-custom-providers.
+    #}
+    <form
+      id="cp-add"
+      class="cp-add-actions"
+      hx-post="/settings/system/custom-provider?project={{ selected_key or '' }}"
+      hx-target="#sys-custom-providers"
+      hx-swap="outerHTML"
+    >
+      <button class="save" type="submit">Add provider</button>
+      <label for="cp-add-toggle" class="cancel">Cancel</label>
+    </form>
+  </div>
+
+</div>

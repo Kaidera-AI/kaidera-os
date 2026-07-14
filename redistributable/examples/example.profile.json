@@ -1,0 +1,23 @@
+{
+  "_comment": "TEMPLATE — a generic, project-agnostic PROJECT PROFILE. A project profile is ONE declarative DATA bundle the harness LOADS at launch to run + customize a project (DATA, not harness code: the harness is a PURE RUNTIME with ZERO AI Workers; CTO 2026-06-18). TO USE IT: COPY this file to '<your_project_key>.profile.json' (the loader resolves a profile by the ACTIVE project's key, so the FILENAME must match your key — a file named 'example.profile.json' does NOT auto-resolve for a project keyed 'acme'), then fill in the placeholders below. The loader applies these values to the existing consumers (designation seed, continuous-hint, default-project, portal worker+persona) with precedence env-knob (override) > profile value > built-in empty default, and degrades to empty if a value is absent. IMPORTANT: this shipped template intentionally leaves 'default_project' EMPTY so the harness ships NO default project — a fresh install opens with no project and the operator creates their own via Get Started. Only set 'default_project' in YOUR copy if you want a deployment to auto-open one project.",
+
+  "schema_version": "1.0",
+
+  "_fill_in": "Set 'project' to your project key (must equal this file's <key> in '<key>.profile.json').",
+  "project": "REPLACE_WITH_YOUR_PROJECT_KEY",
+
+  "_default_project_note": "Leave '' in the shipped template (no shipped default). In your own copy, set it to your key to auto-open that project on boot.",
+  "default_project": "",
+
+  "_continuous_note": "true = this project runs the continuous/heartbeat loop; false = on-demand only.",
+  "continuous": false,
+
+  "_designations_note": "One-time per-agent designation seed, keyed '<project>:<agent>'. designation = interactive | autonomous; role = a free-text label. Replace the placeholder entries (or leave {} to seed nothing). Example shape shown below.",
+  "designations": {
+    "REPLACE_WITH_YOUR_PROJECT_KEY:agent-one": { "designation": "interactive", "role": "lead" },
+    "REPLACE_WITH_YOUR_PROJECT_KEY:agent-two": { "designation": "interactive", "role": "co-lead" }
+  },
+
+  "_portal_note": "OPTIONAL. For a single-agent public 'turnkey' (one shared agent fronted by a reverse proxy): name the worker ('agent'), its project, the public display name ('instance_name'), and EITHER an inline 'persona' system-prompt OR a 'persona_file' pointer (relative to this dir). Leave {} for no portal. The persona is the chatted agent's OWN registry-configured system prompt (DATA, not portal code).",
+  "portal": {}
+}

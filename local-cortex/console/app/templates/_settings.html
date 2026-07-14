@@ -1,0 +1,60 @@
+{#
+  SETTINGS center view (R4a). A full center pane (like the agent-detail view):
+  a header + a left sub-nav of 4 tabs (Configure · Providers & Models · Cortex ·
+  System) and a scrollable content body. Defaults to System (the only functional
+  tab in R4a); the other three render a clean labeled "coming next" placeholder.
+
+  Sub-nav switching is a client-side HTMX swap of just the content body
+  (#settings-body) via GET /settings/{page}?project=…, so the header + sub-nav
+  stay put. The active tab + the parent top-bar "Settings" nav highlight are
+  handled by the shell's syncNav (this root carries data-active-view="settings").
+
+  Context:
+    settings_page  : which sub-tab is active ("system" default)
+    settings_tabs  : ordered [{id,label,soon}] for the sub-nav
+    selected_key   : current project key (kept on the swap URLs)
+    + whatever the active page partial needs (System: `groups`, `saved`)
+#}
+<div class="center on" data-active-view="settings" data-selected-key="{{ selected_key }}" data-selected-agent="">
+  <div class="settings-view">
+
+    {# ---------------- header ---------------- #}
+    <div class="set-head">
+      <div class="ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+      </div>
+      <div>
+        <div class="h-t">Settings</div>
+        <div class="h-s">{{ selected_key or "Kaidera OS" }} · console configuration</div>
+      </div>
+    </div>
+
+    <div class="set-split">
+      {# ---------------- left sub-nav (4 tabs) ---------------- #}
+      <nav class="set-subnav" aria-label="Settings sections">
+        <div class="sn-lbl">Settings</div>
+        {% for tab in settings_tabs %}
+        <button
+          type="button"
+          class="set-nav-item {{ 'on' if tab.id == settings_page else '' }}"
+          data-set-tab="{{ tab.id }}"
+          hx-get="/settings/{{ tab.id }}?project={{ selected_key or '' }}"
+          hx-target="#settings-body"
+          hx-swap="innerHTML"
+          onclick="markSettingsTab(this)"
+        >
+          <span class="sn-ic">{{ settings_tab_icons[tab.id] | safe }}</span>
+          {{ tab.label }}
+          {% if tab.soon %}<span class="soon">{{ tab.soon }}</span>{% endif %}
+        </button>
+        {% endfor %}
+      </nav>
+
+      {# ---------------- content body (sub-tab swap target) ---------------- #}
+      <div class="set-content" id="settings-body">
+        {% include settings_body_template %}
+      </div>
+    </div>
+
+  </div>
+</div>

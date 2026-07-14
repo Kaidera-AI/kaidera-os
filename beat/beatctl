@@ -1,0 +1,693 @@
+#!/usr/bin/env bash
+# beatctl — unified Beat daemon control.
+#
+# Replaces the operator-memorize-launchctl approach with a single command.
+# Renders beat/ai.kaidera.kaidera-os.beat.plist.template for this machine before install;
+# never requires the operator to know the LaunchAgents directory layout.
+#
+# Verbs:
+#   beatctl start       Install plist if missing + load LaunchAgent + wait for first heartbeat
+#   beatctl stop        Unload LaunchAgent (process stops; plist stays installed)
+#   beatctl restart     Stop + start
+#   beatctl pause       Leave LaunchAgent installed but make Beat ticks heartbeat-only
+#   beatctl resume      Clear the pause flag
+#   beatctl status      One-page health summary: service state, recent heartbeats, last error
+#   beatctl logs [-f]   Tail launchd stdout (use -f for live follow)
+#   beatctl errors [-f] Tail launchd stderr
+#   beatctl once        Fire one tick on demand (synchronous, --source manual)
+#   beatctl install     Just install/update the plist; don't load
+#   beatctl uninstall   Unload + remove the plist from LaunchAgents
+#   beatctl help        Show this usage
+#
+# Beat startup ergonomics.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BEAT_DIR="${ROOT}/beat"
+# shellcheck source=./source-cortex-env.sh
+source "${BEAT_DIR}/source-cortex-env.sh"
+LOG_OUT="${BEAT_DIR}/logs/launchd.out.log"
+LOG_ERR="${BEAT_DIR}/logs/launchd.err.log"
+RUNTIME_STATE_DIR="${BEAT_RUNTIME_STATE_DIR:-${HOME}/.beat/state}"
+PAUSE_FLAG="${RUNTIME_STATE_DIR}/pause.flag"
+CORTEX_API_BASE="${CORTEX_API_URL:-${CORTEX_API:-http://localhost:8501}}"
+CORTEX_API_HEALTH="${CORTEX_API_BASE%/}/health"
+CORTEX_ADMIN_TOKEN="${CORTEX_ADMIN_TOKEN:-}"
+LOCAL_BIN="${CORTEX_HOME_BIN:-${HOME}/.local/bin}"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
+if [ -z "${PYTHON_BIN}" ]; then
+    PYTHON_BIN="/usr/bin/python3"
+fi
+RUNTIME_CONFIG_FILE="${CORTEX_RUNTIME_CONFIG:-${ROOT}/.agents/config/runtime.yaml}"
+
+runtime_yaml_value() {
+    local section="$1"
+    local key="$2"
+    [ -f "${RUNTIME_CONFIG_FILE}" ] || return 0
+    awk -v section="${section}" -v key="${key}" '
+        function trim(v) { sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); return v }
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        /^[^[:space:]].*:[[:space:]]*$/ { current=$0; sub(/:[[:space:]]*$/,"",current); current=trim(current); next }
+        current==section { pattern="^[[:space:]]*"key":[[:space:]]*"; if($0~pattern){ v=$0; sub(pattern,"",v); v=trim(v); gsub(/^["'"'"']|["'"'"']$/,"",v); print v; exit } }
+    ' "${RUNTIME_CONFIG_FILE}"
+}
+
+CORTEX_PROJECT="${CORTEX_PROJECT:-$(runtime_yaml_value project name)}"
+
+RUNTIME_PROFILE_JSON="$("${PYTHON_BIN}" "${BEAT_DIR}/runtime-profile.py" --json --root "${ROOT}" 2>/dev/null || printf '{}')"
+runtime_profile_field() {
+    local key="$1"
+    "${PYTHON_BIN}" - "$key" "$RUNTIME_PROFILE_JSON" <<'PYEOF'
+import json
+import sys
+
+key, raw = sys.argv[1:3]
+try:
+    data = json.loads(raw)
+except Exception:
+    data = {}
+value = data.get(key, "")
+print("" if value is None else value)
+PYEOF
+}
+
+CORTEX_PROJECT="${CORTEX_PROJECT:-$(runtime_profile_field project_key)}"
+CORTEX_PROJECT="${CORTEX_PROJECT:-}"
+if [ -z "${CORTEX_PROJECT}" ]; then
+    printf 'ERROR: CORTEX_PROJECT is required; Kaidera OS will not guess a project key.\n' >&2
+    exit 67
+fi
+BEAT_CORTEX_AGENT="${BEAT_CORTEX_AGENT:-$(runtime_profile_field beat_agent)}"
+BEAT_CORTEX_AGENT="${BEAT_CORTEX_AGENT:-beat@${CORTEX_PROJECT}}"
+PLIST_LABEL="${BEAT_LAUNCHD_LABEL:-$(runtime_profile_field beat_launchd_label)}"
+PLIST_LABEL="${PLIST_LABEL:-com.cortex.${CORTEX_PROJECT}.beat}"
+PLIST_NAME="${BEAT_PLIST_NAME:-${PLIST_LABEL}.plist}"
+START_INTERVAL="${BEAT_START_INTERVAL:-$(runtime_profile_field beat_cadence_seconds)}"
+START_INTERVAL="${START_INTERVAL:-1500}"
+PLIST_TEMPLATE="${BEAT_DIR}/ai.kaidera.kaidera-os.beat.plist.template"
+PLIST_STAGED="${BEAT_DIR}/state/${PLIST_NAME}"
+PLIST_INSTALLED="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
+
+# ── Colour helpers ──────────────────────────────────────────────────────────
+green()  { printf '\033[32m%s\033[0m\n' "$1"; }
+red()    { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+yellow() { printf '\033[33m%s\033[0m\n' "$1"; }
+dim()    { printf '\033[2m%s\033[0m\n' "$1"; }
+
+redact_log_secrets() {
+    /usr/bin/sed -E \
+        -e 's#(local-cortex/\.env: line [0-9]+: ).*(command not found)#\1[REDACTED] \2#g' \
+        -e 's#(CORTEX_ADMIN_TOKEN[[:space:]=:>-]+)[^[:space:]]+#\1[REDACTED]#g' \
+        -e 's#(OPENROUTER_API_KEY[[:space:]=:>-]+)[^[:space:]]+#\1[REDACTED]#g' \
+        -e 's#sk-or-v1-[A-Za-z0-9_-]+#sk-or-v1-[REDACTED]#g'
+}
+
+file_mtime_epoch() {
+    local path="$1"
+    if stat -f '%m' "${path}" >/dev/null 2>&1; then
+        stat -f '%m' "${path}"
+        return 0
+    fi
+    if stat -c '%Y' "${path}" >/dev/null 2>&1; then
+        stat -c '%Y' "${path}"
+        return 0
+    fi
+    return 1
+}
+
+format_age() {
+    local seconds="${1:-0}"
+    if [ "${seconds}" -lt 60 ]; then
+        printf '%ss' "${seconds}"
+    elif [ "${seconds}" -lt 3600 ]; then
+        printf '%sm' "$((seconds / 60))"
+    elif [ "${seconds}" -lt 86400 ]; then
+        printf '%sh' "$((seconds / 3600))"
+    else
+        printf '%sd' "$((seconds / 86400))"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+beatctl — unified Beat daemon control
+
+Verbs:
+  beatctl start            Install (if needed) + load + wait for first heartbeat
+  beatctl stop             Stop the daemon (plist stays installed)
+  beatctl restart          Stop + start
+  beatctl pause            Make Beat ticks heartbeat-only until resumed
+  beatctl resume           Clear manual pause
+  beatctl status           One-page health summary (snapshot, exits)
+  beatctl watch [N]        Continuous live heartbeat view, refreshes every N seconds (default 10)
+  beatctl logs [-f]        Tail launchd stdout (-f for live follow)
+  beatctl errors [-f]      Tail launchd stderr
+  beatctl once             Fire one tick on demand (synchronous, --source manual)
+  beatctl install          Install/update plist only (don't load)
+  beatctl uninstall        Unload + remove plist
+  beatctl help             Show this usage
+EOF
+}
+
+# ── Preflight: cortex-api must be reachable ─────────────────────────────────
+check_cortex_api() {
+    if ! curl -fsS --max-time 3 "${CORTEX_API_HEALTH}" >/dev/null 2>&1; then
+        red "cortex-api is NOT reachable at ${CORTEX_API_HEALTH}"
+        red "Beat cannot run without it. Try:"
+        red "  cd ${ROOT}/.agents && docker compose -f docker-compose.cortex.yml up -d cortex-api"
+        return 1
+    fi
+}
+
+require_admin_token() {
+    if [ -z "${CORTEX_ADMIN_TOKEN}" ]; then
+        red "CORTEX_ADMIN_TOKEN is not set. Add it to ${CORTEX_KEYS_FILE:-local-cortex/.env} or export it for this command."
+        return 1
+    fi
+}
+
+beat_status_json() {
+    require_admin_token || return 1
+    local recent_minutes="${1:-10}"
+    local fresh_seconds="${2:-90}"
+    curl -fsS --max-time 5 \
+        "${CORTEX_API_BASE%/}/beat/status?recent_minutes=${recent_minutes}&fresh_seconds=${fresh_seconds}" \
+        -H "X-Project: ${CORTEX_PROJECT}" \
+        -H "X-Cortex-Admin-Token: ${CORTEX_ADMIN_TOKEN}"
+}
+
+json_field() {
+    local payload="$1"
+    local path="$2"
+    "${PYTHON_BIN}" -c '
+import json
+import sys
+
+payload, path = sys.argv[1:3]
+try:
+    value = json.loads(payload)
+except Exception:
+    print("")
+    raise SystemExit(0)
+for part in path.split("."):
+    if isinstance(value, dict):
+        value = value.get(part, "")
+    else:
+        value = ""
+        break
+print("" if value is None else value)
+' "${payload}" "${path}"
+}
+
+# ── Sub-commands ────────────────────────────────────────────────────────────
+
+render_plist() {
+    require_admin_token || return 1
+    if [ ! -f "${PLIST_TEMPLATE}" ]; then
+        red "plist template not found: ${PLIST_TEMPLATE}"
+        return 1
+    fi
+    /bin/mkdir -p "$(dirname "${PLIST_STAGED}")" "${BEAT_DIR}/logs"
+    "${PYTHON_BIN}" - "${PLIST_TEMPLATE}" "${PLIST_STAGED}" "${ROOT}" "${HOME}" "${LOCAL_BIN}" "${PYTHON_BIN}" "${PLIST_LABEL}" "${START_INTERVAL}" "${CORTEX_PROJECT}" "${CORTEX_API_BASE}" "${CORTEX_ADMIN_TOKEN}" "${BEAT_CORTEX_AGENT}" <<'PYEOF'
+from pathlib import Path
+from sys import argv
+from xml.sax.saxutils import escape
+
+(
+    template,
+    dest,
+    root,
+    home,
+    local_bin,
+    python_bin,
+    plist_label,
+    start_interval,
+    cortex_project,
+    cortex_api_url,
+    cortex_admin_token,
+    beat_agent,
+) = argv[1:13]
+python_dir = str(Path(python_bin).resolve().parent)
+values = {
+    "__PROJECT_ROOT__": root,
+    "__HOME__": home,
+    "__LOCAL_BIN__": local_bin,
+    "__PYTHON_BIN__": python_bin,
+    "__PYTHON_DIR__": python_dir,
+    "__PLIST_LABEL__": plist_label,
+    "__START_INTERVAL__": start_interval,
+    "__CORTEX_PROJECT__": cortex_project,
+    "__CORTEX_API_URL__": cortex_api_url.rstrip("/"),
+    "__CORTEX_ADMIN_TOKEN__": cortex_admin_token,
+    "__BEAT_CORTEX_AGENT__": beat_agent,
+}
+text = Path(template).read_text(encoding="utf-8")
+for key, value in values.items():
+    text = text.replace(key, escape(value))
+Path(dest).write_text(text, encoding="utf-8")
+PYEOF
+    /usr/bin/plutil -lint "${PLIST_STAGED}" >/dev/null
+}
+
+cmd_install() {
+    render_plist || return 1
+    /bin/mkdir -p "$(dirname "${PLIST_INSTALLED}")"
+    if [ -f "${PLIST_INSTALLED}" ] && /usr/bin/cmp -s "${PLIST_STAGED}" "${PLIST_INSTALLED}"; then
+        dim "plist already installed (no diff): ${PLIST_INSTALLED}"
+    else
+        /bin/cp "${PLIST_STAGED}" "${PLIST_INSTALLED}"
+        green "plist installed: ${PLIST_INSTALLED}"
+    fi
+    /usr/bin/plutil -lint "${PLIST_INSTALLED}" >/dev/null
+}
+
+is_loaded() {
+    # `launchctl print gui/<uid>/<label>` succeeds when the service is loaded
+    # and fails (rc=113 / "Could not find specified service") otherwise. More
+    # robust than parsing `launchctl list` output, which has tab/whitespace
+    # quirks that broke earlier grep-based detection.
+    launchctl print "gui/$(id -u)/${PLIST_LABEL}" >/dev/null 2>&1
+}
+
+cmd_load() {
+    if is_loaded; then
+        dim "LaunchAgent already loaded."
+        return 0
+    fi
+    launchctl load -w "${PLIST_INSTALLED}"
+    green "LaunchAgent loaded: ${PLIST_LABEL}"
+}
+
+cmd_unload() {
+    if ! is_loaded; then
+        dim "LaunchAgent not loaded."
+        return 0
+    fi
+    launchctl unload "${PLIST_INSTALLED}"
+    green "LaunchAgent unloaded."
+}
+
+# Wait up to N seconds for a fresh launchd-source heartbeat to land via API.
+wait_for_heartbeat() {
+    local timeout="${1:-90}"
+    dim "Waiting up to ${timeout}s for a fresh launchd-source heartbeat..."
+    local elapsed=0
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        local status_payload count
+        status_payload="$(beat_status_json 2 90 2>/dev/null || true)"
+        count="$(json_field "${status_payload}" "heartbeat_count_fresh")"
+        count="${count:-0}"
+        if [ "${count}" -gt 0 ]; then
+            green "Heartbeat detected. (${count} in last 90s.)"
+            return 0
+        fi
+        sleep 5
+        elapsed=$(( elapsed + 5 ))
+        printf '.'
+    done
+    printf '\n'
+    red "No heartbeat detected within ${timeout}s. Run 'beatctl status' to diagnose."
+    return 1
+}
+
+cmd_start() {
+    check_cortex_api || return 1
+    cmd_install
+    cmd_load
+    wait_for_heartbeat 90 || return 1
+}
+
+cmd_stop() {
+    cmd_unload
+}
+
+cmd_restart() {
+    cmd_unload
+    sleep 2
+    cmd_install
+    cmd_load
+    wait_for_heartbeat 90 || return 1
+}
+
+cmd_pause() {
+    /bin/mkdir -p "${RUNTIME_STATE_DIR}"
+    date -Iseconds > "${PAUSE_FLAG}"
+    yellow "Beat paused. LaunchAgent remains installed; ticks will log heartbeat-only."
+}
+
+cmd_resume() {
+    if [ -f "${PAUSE_FLAG}" ]; then
+        /bin/rm -f "${PAUSE_FLAG}"
+        green "Beat resumed."
+    else
+        dim "Beat was not paused."
+    fi
+}
+
+# LCX-UR-017: detect loaded-vs-staged launchd drift. The existing `cmp` only
+# compares the staged FILE against the installed FILE; it does NOT catch the case
+# where the launchd-LOADED job is running stale cached settings (for example a
+# previous interval or orchestrator agent) that differ from the staged plist.
+# We read the live values from
+# `launchctl print` and compare to the staged plist; mismatch => recommend reload.
+staged_plist_value() {
+    local key="$1"
+    [ -f "${PLIST_STAGED}" ] || return 0
+    /usr/bin/awk -v key="<key>${key}</key>" '
+        index($0, key) { found=1; next }
+        found {
+            line=$0
+            sub(/.*<(integer|string)>/, "", line)
+            sub(/<\/(integer|string)>.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            print line; exit
+        }
+    ' "${PLIST_STAGED}"
+}
+
+loaded_launchd_interval() {
+    launchctl print "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null \
+        | /usr/bin/awk -F'=' '/run interval/ { gsub(/[^0-9]/, "", $2); print $2; exit }'
+}
+
+loaded_launchd_agent() {
+    launchctl print "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null \
+        | /usr/bin/awk -F'=>' '/BEAT_CORTEX_AGENT/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }'
+}
+
+check_loaded_vs_staged_drift() {
+    is_loaded || return 0
+    local staged_interval staged_agent loaded_interval loaded_agent drift=0
+    staged_interval="$(staged_plist_value StartInterval)"
+    staged_agent="$(staged_plist_value BEAT_CORTEX_AGENT)"
+    loaded_interval="$(loaded_launchd_interval)"
+    loaded_agent="$(loaded_launchd_agent)"
+
+    if [ -n "${staged_interval}" ] && [ -n "${loaded_interval}" ] \
+       && [ "${staged_interval}" != "${loaded_interval}" ]; then
+        yellow "drift:      launchd interval loaded=${loaded_interval}s but staged=${staged_interval}s"
+        drift=1
+    fi
+    if [ -n "${staged_agent}" ] && [ -n "${loaded_agent}" ] \
+       && [ "${staged_agent}" != "${loaded_agent}" ]; then
+        yellow "drift:      launchd BEAT_CORTEX_AGENT loaded=${loaded_agent} but staged=${staged_agent}"
+        drift=1
+    fi
+    if [ "${drift}" -eq 1 ]; then
+        yellow "            loaded launchd job is stale — run 'beatctl restart' to adopt the staged plist."
+    else
+        green "drift:      none (loaded launchd matches staged plist)"
+    fi
+}
+
+cmd_status() {
+    printf '\n=== Beat daemon status ===\n\n'
+    render_plist >/dev/null || true
+
+    # 1. cortex-api
+    if curl -fsS --max-time 3 "${CORTEX_API_HEALTH}" >/dev/null 2>&1; then
+        green "cortex-api: reachable"
+    else
+        red   "cortex-api: NOT reachable at ${CORTEX_API_HEALTH}"
+    fi
+
+    # 2. plist installation
+    if [ -f "${PLIST_INSTALLED}" ]; then
+        if /usr/bin/cmp -s "${PLIST_STAGED}" "${PLIST_INSTALLED}"; then
+            green "plist:      installed (matches staged)"
+        else
+            yellow "plist:      installed but DIFFERS from staged at ${PLIST_STAGED}"
+        fi
+    else
+        red    "plist:      NOT installed (run 'beatctl install')"
+    fi
+
+    # 3. launchd service state
+    if is_loaded; then
+        local svc_line
+        svc_line=$(launchctl list | /usr/bin/grep "[[:space:]]${PLIST_LABEL}\$" | head -1)
+        local pid exitcode
+        pid=$(echo "${svc_line}" | awk '{print $1}')
+        exitcode=$(echo "${svc_line}" | awk '{print $2}')
+        if [ "${pid}" = "-" ]; then
+            green "service:    loaded, idle (last exit ${exitcode})"
+        else
+            green "service:    loaded, RUNNING (pid=${pid}, last exit ${exitcode})"
+        fi
+        if [ "${exitcode}" != "0" ] && [ "${exitcode}" != "-" ]; then
+            yellow "  ⚠ last exit was non-zero — check 'beatctl errors'"
+        fi
+    else
+        red    "service:    NOT loaded (run 'beatctl start')"
+    fi
+
+    # 3a. loaded-vs-staged launchd drift (LCX-UR-017)
+    check_loaded_vs_staged_drift
+
+    # 3b. manual pause state
+    if [ -f "${PAUSE_FLAG}" ]; then
+        yellow "control:    PAUSED since $(cat "${PAUSE_FLAG}" 2>/dev/null || true)"
+    else
+        green "control:    active"
+    fi
+
+    # 4. recent heartbeats via cortex-api
+    printf '\nRecent launchd-source heartbeats (last 60 min):\n'
+    local status_payload
+    status_payload="$(beat_status_json 60 1800 2>/dev/null || true)"
+    if [ -z "${status_payload}" ]; then
+        yellow "  cortex-api /beat/status unavailable"
+    else
+        "${PYTHON_BIN}" -c '
+import json
+import sys
+
+data = json.loads(sys.stdin.read() or "{}")
+rows = data.get("recent_heartbeats") or []
+if not rows:
+    print("  (none)")
+else:
+    for row in rows:
+        print("  {}  {}".format(row.get("ts", ""), (row.get("summary") or "")[:90]))
+' <<< "${status_payload}"
+    fi
+
+    # 5. Stderr context; label old launchd output as stale so status does not
+    # imply a current failure from a previous run.
+    if [ -s "${LOG_ERR}" ]; then
+        local stderr_mtime
+        local stderr_age=-1
+        stderr_mtime="$(file_mtime_epoch "${LOG_ERR}" 2>/dev/null || true)"
+        if [ -n "${stderr_mtime}" ]; then
+            stderr_age=$(($(date +%s) - stderr_mtime))
+        fi
+        if [ "${stderr_age}" -ge 3600 ]; then
+            printf '\nStale stderr (last write %s ago; last 5 lines from %s):\n' "$(format_age "${stderr_age}")" "${LOG_ERR}"
+        elif [ "${stderr_age}" -ge 0 ]; then
+            printf '\nRecent stderr (last write %s ago; last 5 lines from %s):\n' "$(format_age "${stderr_age}")" "${LOG_ERR}"
+        else
+            printf '\nRecent stderr (mtime unavailable; last 5 lines from %s):\n' "${LOG_ERR}"
+        fi
+        tail -5 "${LOG_ERR}" | redact_log_secrets | /usr/bin/sed 's/^/  /'
+    fi
+
+    printf '\n'
+}
+
+cmd_logs() {
+    if [ "${1:-}" = "-f" ]; then
+        exec tail -f "${LOG_OUT}"
+    fi
+    tail -50 "${LOG_OUT}"
+}
+
+cmd_errors() {
+    if [ ! -s "${LOG_ERR}" ]; then
+        green "No errors logged."
+        return 0
+    fi
+    if [ "${1:-}" = "-f" ]; then
+        tail -f "${LOG_ERR}" | redact_log_secrets
+        return "${PIPESTATUS[0]}"
+    fi
+    tail -50 "${LOG_ERR}" | redact_log_secrets
+}
+
+cmd_once() {
+    check_cortex_api || return 1
+    if [ -z "${KAIDERA_OS_BEAT_ACTIONS_SCRIPT:-}" ]; then
+        red "No KAIDERA_OS_BEAT_ACTIONS_SCRIPT configured; beat once has no generic default."
+        return 67
+    fi
+    cd "${ROOT}"
+    "${PYTHON_BIN}" \
+        "${KAIDERA_OS_BEAT_ACTIONS_SCRIPT}" once --source manual "$@"
+}
+
+cmd_uninstall() {
+    cmd_unload
+    if [ -f "${PLIST_INSTALLED}" ]; then
+        /bin/rm "${PLIST_INSTALLED}"
+        green "plist removed: ${PLIST_INSTALLED}"
+    else
+        dim "plist already absent."
+    fi
+}
+
+cmd_watch() {
+    # Continuous rich Beat status display. Refreshes every N seconds (default 10)
+    # and shows: service state, recent heartbeats, pending/claimed handoff counts,
+    # recent heartbeat summary, cron action results, and decisions by agent.
+    # Ctrl-C to exit. Designed to be the focused pane operators leave open.
+    local interval="${1:-10}"
+    if ! [[ "${interval}" =~ ^[0-9]+$ ]] || [ "${interval}" -lt 2 ]; then
+        red "interval must be an integer >= 2 seconds"
+        return 1
+    fi
+
+    # Hide cursor; restore + clear on exit
+    printf '\033[?25l'
+    trap 'printf "\033[?25h\n"; exit 0' INT TERM
+
+    while true; do
+        # Capture all the data first so the screen redraw is atomic-ish.
+        local now api_status svc_line svc_state svc_pid svc_exit
+        now=$(date '+%H:%M:%S')
+
+        if curl -fsS --max-time 2 "${CORTEX_API_HEALTH}" >/dev/null 2>&1; then
+            api_status="\033[32mreachable\033[0m"
+        else
+            api_status="\033[31mNOT reachable\033[0m"
+        fi
+
+        if is_loaded; then
+            svc_line=$(launchctl list 2>/dev/null | /usr/bin/grep "${PLIST_LABEL}" | head -1)
+            svc_pid=$(echo "${svc_line}" | awk '{print $1}')
+            svc_exit=$(echo "${svc_line}" | awk '{print $2}')
+            if [ "${svc_pid}" = "-" ]; then
+                svc_state="\033[32midle\033[0m (last exit ${svc_exit})"
+            else
+                svc_state="\033[33mRUNNING\033[0m pid=${svc_pid}"
+            fi
+        else
+            svc_state="\033[31mNOT LOADED\033[0m"
+        fi
+
+        local status_payload pending_n claimed_n stale_n consults_n last_hb fresh_hb
+        status_payload="$(beat_status_json 60 1800 2>/dev/null || true)"
+        pending_n="$(json_field "${status_payload}" "counts.pending")"
+        claimed_n="$(json_field "${status_payload}" "counts.claimed")"
+        stale_n="$(json_field "${status_payload}" "counts.stale")"
+        consults_n="$(json_field "${status_payload}" "counts.consults")"
+        last_hb="$(json_field "${status_payload}" "last_heartbeat")"
+        fresh_hb="$(json_field "${status_payload}" "heartbeat_count_fresh")"
+
+        # Render — clear screen + cursor home
+        printf '\033[2J\033[H'
+
+        printf '\033[1m═══════════════ Beat Watch ═══ %s ═══════════════\033[0m\n\n' "${now}"
+        printf '  cortex-api : %b\n' "${api_status}"
+        printf '  service    : %b\n' "${svc_state}"
+        printf '  last beat  : %s   (fresh heartbeats <=30 min: %s)\n\n' "${last_hb:-—}" "${fresh_hb:-0}"
+
+        printf '\033[1m─── Current heartbeat summary ───\033[0m\n'
+        if [ -f /tmp/beat-operator-summary.txt ]; then
+            while IFS= read -r line; do
+                case "${line}" in
+                    STATUS\ GREEN*) printf '  \033[32m%s\033[0m\n' "${line}" ;;
+                    STATUS\ AMBER*) printf '  \033[33m%s\033[0m\n' "${line}" ;;
+                    STATUS\ RED*)   printf '  \033[31m%s\033[0m\n' "${line}" ;;
+                    *)              printf '  %s\n' "${line}" ;;
+                esac
+            done < <(sed -n '1,24p' /tmp/beat-operator-summary.txt)
+        else
+            printf '  \033[2mWaiting for /tmp/beat-operator-summary.txt\033[0m\n'
+        fi
+        printf '\n'
+
+        printf '\033[1m─── Handoffs (project: %s) ───\033[0m\n' "${CORTEX_PROJECT}"
+        printf '  pending   : %s\n' "${pending_n:-0}"
+        printf '  claimed   : %s\n' "${claimed_n:-0}"
+        if [ "${stale_n:-0}" -gt 0 ]; then
+            printf '  \033[33mstale (>24h): %s\033[0m\n' "${stale_n}"
+        else
+            printf '  stale (>24h): 0\n'
+        fi
+        if [ "${consults_n:-0}" -gt 0 ]; then
+            printf '  \033[31mConsults awaiting review: %s\033[0m\n' "${consults_n}"
+        fi
+        printf '\n'
+
+        printf '\033[1m─── Recent cron runs (last 10 min) ───\033[0m\n'
+        "${PYTHON_BIN}" -c '
+import json
+import sys
+
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    data = {}
+rows = data.get("cron_runs") or []
+if not rows:
+    print("  \033[2m(none)\033[0m")
+else:
+    for row in rows:
+        st = row.get("status") or "?"
+        colour = {"ok": "\033[32m", "fail": "\033[31m"}.get(st, "\033[2m")
+        print("  {}  {:<22}  {}{}\033[0m".format(row.get("ts", ""), row.get("name") or "?", colour, st))
+' <<< "${status_payload}"
+        printf '\n'
+
+        printf '\033[1m─── Agent activity (decisions, last 5 min) ───\033[0m\n'
+        "${PYTHON_BIN}" -c '
+import json
+import sys
+
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    data = {}
+rows = data.get("agent_activity") or []
+if not rows:
+    print("  \033[2m(none)\033[0m")
+else:
+    for row in rows:
+        print("  {:<16}  {}".format(row.get("agent_name") or "", row.get("count", 0)))
+' <<< "${status_payload}"
+        printf '\n'
+
+        printf '\033[2mRefresh every %ss · Ctrl-C to exit\033[0m' "${interval}"
+        sleep "${interval}"
+    done
+}
+
+# ── Dispatch ────────────────────────────────────────────────────────────────
+
+if [ "${BEATCTL_SOURCE_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+VERB="${1:-help}"
+shift || true
+
+case "${VERB}" in
+    start)     cmd_start ;;
+    stop)      cmd_stop ;;
+    restart)   cmd_restart ;;
+    pause)     cmd_pause ;;
+    resume)    cmd_resume ;;
+    status)    cmd_status ;;
+    watch)     cmd_watch "$@" ;;
+    logs)      cmd_logs "$@" ;;
+    errors)    cmd_errors "$@" ;;
+    once)      cmd_once "$@" ;;
+    install)   cmd_install ;;
+    uninstall) cmd_uninstall ;;
+    help|-h|--help) usage ;;
+    *)
+        red "Unknown verb: ${VERB}"
+        usage
+        exit 1
+        ;;
+esac

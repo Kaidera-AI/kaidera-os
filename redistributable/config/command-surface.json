@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "surface_version": "kaidera-os-e006-inc01-2026-06-01",
+  "description": "Classifies redistributable command surfaces for the API-only normal-agent and canonical drift gate. Every .agents/scripts/cortex-* command MUST appear in exactly one bucket (the verifier fails on unclassified or multi-bucket entries). agent = API-only (scanned for forbidden direct PG/Redis/container patterns); operator = recovery/admin tooling that may use direct DB/Redis (exempt from the pattern scan). The surface_version must match CORTEX_SURFACE_VERSION when used as a drift gate. NOTE (REN-ARCH-01): cortex-projects, cortex-history, cortex-invalidate, cortex-verify, and cortex-onboard have been migrated to typed APIs and reclassified as agent commands.",
+  "agent": [
+    ".agents/scripts/cortex-add-agent",
+    ".agents/scripts/cortex-remove-agent",
+    ".agents/scripts/cortex-board",
+    ".agents/scripts/cortex-brief",
+    ".agents/scripts/cortex-boot",
+    ".agents/scripts/cortex-bootstrap",
+    ".agents/scripts/cortex-dashboard-md",
+    ".agents/scripts/cortex-diary",
+    ".agents/scripts/cortex-embed",
+    ".agents/scripts/cortex-evidence",
+    ".agents/scripts/cortex-extract-entities",
+    ".agents/scripts/cortex-graph-build",
+    ".agents/scripts/cortex-graph-extract",
+    ".agents/scripts/cortex-handoff",
+    ".agents/scripts/cortex-ingest-all",
+    ".agents/scripts/cortex-ingest-beat-sessions",
+    ".agents/scripts/cortex-ingest-codex",
+    ".agents/scripts/cortex-ingest-memories",
+    ".agents/scripts/cortex-ingest-session",
+    ".agents/scripts/cortex-history",
+    ".agents/scripts/cortex-invalidate",
+    ".agents/scripts/cortex-log",
+    ".agents/scripts/cortex-onboard",
+    ".agents/scripts/cortex-project",
+    ".agents/scripts/cortex-projects",
+    ".agents/scripts/cortex-roster",
+    ".agents/scripts/cortex-save-chat",
+    ".agents/scripts/cortex-search",
+    ".agents/scripts/cortex-state",
+    ".agents/scripts/cortex-tail",
+    ".agents/scripts/cortex-verify",
+    ".agents/scripts/cortex-work-product",
+    ".agents/scripts/cortex-deciption",
+    ".agents/scripts/cortex-graph-blast",
+    ".agents/scripts/cortex-graph-callers",
+    ".agents/scripts/cortex-graph-impact",
+    ".agents/scripts/cortex-graph-large-fn",
+    ".agents/scripts/cortex-graph-search",
+    ".agents/scripts/cortex-ingest-audio",
+    ".agents/scripts/cortex-memory",
+    "redistributable/scripts/cortex-startup-wizard",
+    "redistributable/scripts/cortex_startup_wizard.py",
+    ".agents/launchers/run-cortex-tail.sh",
+    ".agents/launchers/run-dashboard.sh",
+    "beat/beatctl",
+    "beat/launchd-wrapper.sh"
+  ],
+  "operator": [
+    ".agents/scripts/_cortex_lib.sh",
+    ".agents/scripts/cortex-apply-migrations",
+    ".agents/scripts/cortex-backup",
+    ".agents/scripts/cortex-diagnose",
+    ".agents/scripts/cortex-entities",
+    ".agents/scripts/cortex-graph-stats",
+    ".agents/scripts/cortex-graph-prune",
+    ".agents/scripts/cortex-harness-doctor",
+    ".agents/scripts/cortex-ingest-artifact",
+    ".agents/scripts/cortex-init-project",
+    ".agents/scripts/cortex-maintain-agents",
+    ".agents/scripts/cortex-memory-audit",
+    ".agents/scripts/cortex-progress-dashboard",
+    ".agents/scripts/cortex-registry-doctor",
+    ".agents/scripts/cortex-roster-cleanup",
+    ".agents/scripts/cortex-migrate",
+    ".agents/scripts/cortex-retain",
+    ".agents/scripts/cortex-discipline",
+    ".agents/scripts/cortex-ingest-claude-local-state",
+    ".agents/scripts/cortex-maintain",
+    ".agents/scripts/cortex-merge-projects",
+    ".agents/scripts/cortex-rebuild-history",
+    ".agents/scripts/cortex-reconcile-identities",
+    ".agents/scripts/cortex-skill",
+    ".agents/scripts/cortex-sync-workspace",
+    ".agents/scripts/cortex-sync-generate-harness",
+    ".agents/scripts/cortex-harness-cutover",
+    ".agents/scripts/cortex-harness-rollback",
+    "redistributable/scripts/cortex-project-pack",
+    "redistributable/scripts/validate-cortex-project-pack.py",
+    "redistributable/scripts/verify-cortex-package.py"
+  ],
+  "installer": [
+    "redistributable/scripts/configure-local-cortex-package.sh",
+    "redistributable/scripts/install-herdr-runtime.sh",
+    "redistributable/scripts/verify-herdr-runtime.py"
+  ],
+  "deprecated": [],
+  "forbidden_agent_patterns": [
+    {
+      "name": "postgres client",
+      "regex": "(^|[^A-Za-z0-9_-])psql([^A-Za-z0-9_-]|$)"
+    },
+    {
+      "name": "redis client",
+      "regex": "(^|[^A-Za-z0-9_-])redis-cli([^A-Za-z0-9_-]|$)"
+    },
+    {
+      "name": "direct docker exec",
+      "regex": "\\bdocker(-compose)?\\s+(compose\\s+)?exec\\b"
+    },
+    {
+      "name": "raw redis helper",
+      "regex": "(^|[^A-Za-z0-9_-])(rcli|prcli)\\b"
+    },
+    {
+      "name": "admin redis passthrough",
+      "regex": "/admin/redis"
+    },
+    {
+      "name": "raw postgres helper",
+      "regex": "(^|[^A-Za-z0-9_-])(pg_query|pg_exec|pg_query_file|pg_exec_file)\\b"
+    }
+  ]
+}

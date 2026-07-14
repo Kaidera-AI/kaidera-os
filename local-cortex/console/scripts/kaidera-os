@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# kaidera-os - Kaidera OS deployment CLI shim (packaging Inc 1).
+#
+# Thin launcher for app.kaidera_os_cli (the twin of run-chat/run-explain): manages an
+# already-installed native console - `kaidera-os upgrade <artifact>` (rollback on failure),
+# status / restart / version / install. Paths derive from THIS script's location so it's
+# drop-in.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+PY="$CONSOLE/.venv/bin/python"
+# start/restart/stop need the console actually installed (venv built by `kaidera-os install`).
+# A fresh `brew install` has no venv yet — give a clear directive instead of an opaque failure.
+case "${1:-}" in
+  start|restart|stop)
+    [ -x "$PY" ] || { echo "kaidera-os: the console isn't installed yet - run:  kaidera-os install" >&2; exit 2; }
+    ;;
+esac
+[ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+cd "$CONSOLE"
+exec "$PY" -m app.kaidera_os_cli "$@"

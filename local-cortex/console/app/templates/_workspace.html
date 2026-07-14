@@ -1,0 +1,150 @@
+{#
+  COLUMN 4 — WORKSPACE dock (project-scoped file tree + actions).
+
+  Re-rendered whole on a project switch (GET /workspace/{key}) so the tree
+  re-roots at the newly selected project's repo_root. The right column is the
+  file TREE only — clicking a file opens it in the CENTER pane (preview + edit),
+  not in this column. Layout:
+    - dock head     : "Workspace" title + collapse chevron
+    - dock toolbar  : project name (root label) · new file · new folder · refresh
+    - tree          : the root directory's entries (lazy children below)
+    - ctx menu      : the ⋯/right-click action menu (open/rename/move/new/delete)
+    - toast slot    : create/rename/move/delete acknowledgements
+
+  Vars:
+    entries          : root directory entries (workspace.Entry; hidden incl.)
+    ws_project_key   : scoped project key
+    ws_project_name  : project display name (the tree root label)
+    ws_repo_root     : absolute repo_root on disk (title tooltip only)
+    ws_error         : set if the root could not be listed (no worktree / escape)
+#}
+<aside class="dock" id="ws-dock" aria-label="Workspace" data-ws-key="{{ ws_project_key }}">
+  {#
+    COLLAPSED STRIP — shown only when the whole column is minimised (toggleDock
+    adds .collapsed to #ws-dock + drives --col-dock to a thin strip so the center
+    reclaims the freed width). Clicking anywhere on the strip (or its arrow)
+    expands the panel back to its previous width.
+  #}
+  <div
+    class="dock-strip"
+    id="ws-dock-strip"
+    onclick="toggleDock()"
+    role="button"
+    tabindex="0"
+    title="Expand workspace panel"
+    aria-label="Expand workspace panel"
+    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDock();}"
+  >
+    <span class="ds-expand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </span>
+    <svg class="ds-ws-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    <span class="ds-label">Workspace</span>
+  </div>
+
+  <div class="dock-head">
+    <span class="wtitle">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span class="t">Workspace</span>
+    </span>
+    {# collapse the WHOLE column to a thin strip (center reclaims the width) #}
+    <button
+      class="dock-collapse"
+      id="ws-dock-collapse"
+      type="button"
+      onclick="toggleDock()"
+      title="Collapse workspace panel"
+      aria-label="Collapse workspace panel"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+  </div>
+
+  {# panel toolbar: project root label + new file · new folder · refresh #}
+  <div class="dock-toolbar">
+    <span class="root-name" title="{{ ws_repo_root or 'project working folder on disk' }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span class="wt">{{ ws_project_name or ws_project_key }}</span>
+    </span>
+    <span class="tb-actions">
+      {% if not ws_error %}
+      <button class="tb-btn" type="button" title="New file" aria-label="New file" onclick="wsNew('file')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+      </button>
+      <button class="tb-btn" type="button" title="New folder" aria-label="New folder" onclick="wsNew('folder')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v4M10 13h4"/></svg>
+      </button>
+      {% endif %}
+      <button
+        class="tb-btn"
+        title="Refresh tree"
+        aria-label="Refresh tree"
+        hx-get="/workspace/{{ ws_project_key }}"
+        hx-target="#ws-dock"
+        hx-swap="outerHTML"
+        onclick="this.classList.add('spin-once')"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </span>
+  </div>
+
+  <div class="dock-body">
+    {% if ws_error %}
+    <div class="ws-noroot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M8 13h8"/></svg>
+      <p class="ws-noroot-t">No worktree</p>
+      <p class="ws-noroot-s">{{ ws_error }}</p>
+    </div>
+    {% else %}
+    {# root drop-zone: dragging a row here (the empty tree area) moves it to root #}
+    <div class="tree" id="ws-tree" data-path="" data-dir="1">
+      {% include "_tree.html" %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# ---- context menu (⋯ / right-click): open · rename · move · new · delete ---- #}
+  <div class="ctx-menu" id="ws-ctx-menu" role="menu" aria-hidden="true">
+    <div class="ctx-path" id="ws-ctx-path"></div>
+    <button class="ctx-item" type="button" role="menuitem" data-op="open">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      Open
+    </button>
+    <button class="ctx-item" type="button" role="menuitem" data-op="rename">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      Rename…
+    </button>
+    <button class="ctx-item" type="button" role="menuitem" data-op="move">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20M12 2v20"/></svg>
+      Move…
+    </button>
+    <div class="ctx-sep" data-dir-only></div>
+    <button class="ctx-item" type="button" role="menuitem" data-op="newFile" data-dir-only>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+      New file…
+    </button>
+    <button class="ctx-item" type="button" role="menuitem" data-op="newFolder" data-dir-only>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v4M10 13h4"/></svg>
+      New folder…
+    </button>
+    <div class="ctx-sep"></div>
+    <button class="ctx-item danger" type="button" role="menuitem" data-op="delete">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+      Delete
+    </button>
+  </div>
+
+  {#
+    File-action mutations POST here (hx-post set by JS), render a toast into the
+    slot, and fire HX-Trigger:ws-tree-changed to refresh the tree. Kept inside
+    #ws-dock so a project switch (which re-renders the dock) resets it.
+  #}
+  <form
+    id="ws-action-form"
+    hx-target="#ws-toast-slot"
+    hx-swap="innerHTML"
+    style="display:none"
+  ></form>
+  <div class="ws-toast-slot" id="ws-toast-slot" aria-live="polite"></div>
+</aside>

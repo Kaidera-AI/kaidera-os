@@ -1,0 +1,103 @@
+.env
+.envrc
+.DS_Store
+
+# Dogfood/VM backup dirs — contain secrets (.env, creds, tokens, settings exports).
+# NEVER commit. chmod 700 dir / 600 files locally.
+.dogfood-backup/
+
+# Generated runtime/build state
+.build/
+.code-review-graph/
+.pytest_cache/
+.coverage
+coverage.json
+htmlcov/
+.worktrees/
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+
+# Local CLI/tool output. The actual skills and project docs live elsewhere:
+# - Playwright skill code is installed under Codex skills/plugins, not here.
+# - Reviewable visual plans belong under docs/plans/.
+.local/
+.playwright-cli/
+# Optional local Obscura runtime binaries; never ship them in source or redist.
+/obscura
+/obscura-worker
+.claude/projects/
+plans/
+.obsidian/
+.agents/config/runtime.yaml
+.agents/config/workspace.json
+.agents/config/beat.env
+.agents/config/autonomy-policy.json
+.agents/config/sync.yaml
+.agents/agents/
+.agents/rules/
+.agents/skills/manifest.json
+.agents/skills/.embcache.json
+
+# Console SPA (Track C) dependency artifacts — never commit these.
+local-cortex/console/spa/node_modules/
+# NOTE: local-cortex/console/spa/dist/ (the BUILT SPA bundle) is DELIBERATELY TRACKED, not ignored.
+# The native install.sh redistributable serves it on fresh, npm-less servers that cannot rebuild it;
+# gitignoring + force-adding it caused a recurring "SPA bundle missing" because content-hashed
+# rebuilds got dropped by `git add -A`. The check-redist-complete fitness gate keeps it committed +
+# consistent. (Container builds rebuild the SPA themselves, so this only matters for the native path.)
+
+# Customer/project AI-worker drops used during dogfooding must not leak into the
+# generic boot path. Package workers are explicit opt-in extensions loaded only
+# when configured by deployment/package metadata.
+scripts/fitness/local/
+
+# Local operator/runtime output
+.kaidera-os/
+beat/logs/
+beat/state/
+local-cortex/logs/
+output/
+
+# Isolated per-agent/branch git worktrees + their lifecycle lock (runtime only;
+# beat/worktree-manager.sh). Never commit checked-out worktrees or the lock dir.
+beat/state/worktrees/
+beat/state/worktrees.lock/
+
+# Local one-off loop launchers used while dogfooding agent runtimes.
+beat/run-*-agent-loop.sh
+beat/run-*-continuous-loop.sh
+
+# Historical snapshots and research/vendor payloads
+local-cortex/snapshots/
+scratch/
+.obsidian/plugins/
+
+# Binary/archive source material is kept in the tree for provenance, but it is
+# not useful input for code graph generation.
+*.pdf
+*.tgz
+*.zip
+*.tar
+*.tar.gz
+.gstack/
+.agents/.harness-backups/
+local-cortex/.console-host
+/run-kaidera-os-console.sh
+/kaidera-os-console.service
+/Caddyfile
+/dist/macos/
+
+# DB dumps / dogfood backups may contain live provider keys — never commit
+.dogfood-backup/
+*-appdb-settings.sql
+*.dump
+.archive/
+
+
+
+
+# Ignore Smart Environment folder
+.smart-env

@@ -1,0 +1,440 @@
+## Cortex Agent Memory Stack
+## Run: docker compose -f .agents/docker-compose.cortex.yml up -d
+## API: http://localhost:8501
+## Postgres: localhost:5499 (internal only — use the API)
+## Local machine only. This compose file is not the Kaidera AI platform deployment
+## and not any external project/customer deployment.
+
+name: kaidera-os-cortex
+
+services:
+  cortex-pg:
+    image: pgvector/pgvector:pg16
+    container_name: cortex-pg
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5499:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: platform_agent_memory
+    volumes:
+      - cortex-pg-data:/var/lib/postgresql/data
+      # Fresh-deploy bootstrap — runs ONCE on an empty data volume (a new VM); a no-op
+      # on an existing volume (this deployment), so it can't touch live agent memory. Creates
+      # the cortex_app role + applies the COMPLETE captured schema so cortex-api can boot
+      # on a brand-new DB. See data/initdb/00-cortex-bootstrap.sh.
+      - ./data/initdb:/docker-entrypoint-initdb.d:ro
+      - ./data/cortex-schema-full.sql:/cortex-bootstrap/cortex-schema-full.sql:ro
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check. During first-boot init Postgres runs the initdb
+      # bootstrap on a socket-only temp server (TCP down), so this stays unhealthy until
+      # the bootstrap finishes and the real server is up — gating cortex-api (which
+      # depends_on: service_healthy) until the schema + cortex_app role actually exist.
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1 -d platform_agent_memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  cortex-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: cortex-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Local-only env (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, NVIDIA_API_KEY, etc)
+    # lives in ../local-cortex/.env for this Kaidera OS deployment.
+    # docker-compose loads this file BEFORE evaluating the `environment:` block,
+    # so ${OPENROUTER_API_KEY:-} below resolves from local-cortex/.env even
+    # when the host shell hasn't sourced it. K8s deployment ignores this and
+    # relies on Secrets/ConfigMaps instead — env_file is dev-machine convenience.
+    env_file:
+      - ../local-cortex/.env
+    environment:
+      CORTEX_API_URL: "${CORTEX_API_URL:-http://localhost:8501}"
+      # Reach cortex-pg over the in-network service name (both on cortex-net), NOT a
+      # host round-trip. host.docker.internal:5499 worked only on Docker Desktop;
+      # on a Linux VM the host-gateway alias can't reach cortex-pg's 127.0.0.1-bound
+      # published port, so cortex-api couldn't find its DB ("app can't find Cortex").
+      # cortex-pg:5432 is identical on Mac + Linux and avoids exposing the DB wider.
+      CORTEX_PG_DSN: postgresql://postgres:postgres@cortex-pg:5432/platform_agent_memory
+      # Phase C cutover (handoff 1f5746f2): two-pool architecture activates RLS
+      # enforcement on cortex-api. PG_DSN_APP connects as cortex_app (non-superuser,
+      # RLS-enforced); PG_DSN_ADMIN connects as postgres (superuser, RLS-bypassed)
+      # for admin/global paths. Provisioned by .agents/data/migrations/2026-05-08-phase-c-cortex-app-role.sql.
+      CORTEX_PG_DSN_APP: postgresql://cortex_app:cortex_app@cortex-pg:5432/platform_agent_memory
+      CORTEX_PG_DSN_ADMIN: postgresql://postgres:postgres@cortex-pg:5432/platform_agent_memory
+      CORTEX_EVENT_BACKEND: postgres
+      CORTEX_SURFACE_VERSION: "kaidera-os-e009-clean-baseline-2026-06-24"
+      CORTEX_MIGRATIONS_DIR: /app/migrations
+      CORTEX_EMBED_PROVIDER: openrouter
+      CORTEX_EMBED_MODEL: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      CORTEX_EMBED_DIMS: "768"
+      CORTEX_RERANK_ENABLED: "true"
+      CORTEX_RERANK_PROVIDER: nvidia
+      CORTEX_RERANK_MODEL: "nv-rerank-qa-mistral-4b:1"
+      CORTEX_LOCAL_STATE_PROJECT: _local_state
+      CORTEX_CUSTOMER: ${CORTEX_CUSTOMER:-local}
+      # OPENROUTER_API_KEY is intentionally NOT in environment: — it loads
+      # from env_file: ../local-cortex/.env. Setting it here would override
+      # env_file with an empty string when the host shell hasn't sourced
+      # the env, defeating the whole point of the env_file directive.
+      # Free model defaults for local development — zero-cost agent memory
+      CORTEX_V2_ENTITY_MODEL: "google/gemma-4-31b-it:free"
+      CORTEX_ANALYSIS_MODEL: "google/gemma-4-31b-it:free"
+      CORTEX_ANALYSIS_FALLBACK_MODELS: "nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,minimax/minimax-m2.5:free,openai/gpt-oss-120b:free"
+    depends_on:
+      cortex-pg:
+        condition: service_healthy
+    volumes:
+      - ./data/migrations:/app/migrations:ro
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────────────
+  # App-DB — the lightweight OPERATIONAL store (E007 / DATA_SEPARATION.md).
+  # Usage/token telemetry, cost/billing, and analytics live HERE — separate
+  # from cortex-pg (which stays agent memory + coordination only). The console
+  # connects to it directly (a second DB connection); Cortex never touches it.
+  # Additive: this does NOT alter cortex-pg / cortex-api or the Cortex API.
+  # Host port 5500 (NOT 5499/5432/6379), own volume harness-appdb-data.
+  # Schema: .agents/data/appdb/schema.sql (apply once it's up — see that file).
+  # ─────────────────────────────────────────────────────────────────────
+  harness-appdb:
+    image: postgres:17-alpine
+    container_name: harness-appdb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5500:5432"
+    environment:
+      POSTGRES_USER: "${HARNESS_APPDB_USER:-harness}"
+      POSTGRES_PASSWORD: "${HARNESS_APPDB_PASSWORD:-harness}"
+      POSTGRES_DB: "${HARNESS_APPDB_DB:-harness_app}"
+    volumes:
+      - harness-appdb-data:/var/lib/postgresql/data
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HARNESS_APPDB_USER:-harness} -d ${HARNESS_APPDB_DB:-harness_app}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────────────
+  # harness-appdb-migrate — the app-DB SCHEMA RUNNER (Milestone 1 T13).
+  #
+  # WHY: until now the app-DB schema (run_state / run_span / usage_events /
+  # settings / orchestration / propose-mode) was applied BY HAND — there was no
+  # runner, so a fresh stack had no schema and the console's run-state writes had
+  # nowhere to land. This one-shot CONVERGES the schema before the console boots:
+  # it applies every .agents/data/appdb/*.sql idempotently (each migration is
+  # written CREATE ... IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS, so
+  # re-running on every `up` is a safe no-op), then exits 0. The console's
+  # depends_on waits on `service_completed_successfully` so it never starts
+  # against an unmigrated DB.
+  #
+  # It is the same postgres:17-alpine image as harness-appdb (so `psql` is present)
+  # and connects over the in-network service name (harness-appdb:5432), NOT the
+  # host-published 5500. ON_ERROR_STOP=1 makes a bad migration fail the one-shot
+  # (and therefore block the console) instead of silently half-applying.
+  # ─────────────────────────────────────────────────────────────────────
+  harness-appdb-migrate:
+    image: postgres:17-alpine
+    container_name: cortex-appdb-migrate
+    # In-network DSN to the app-DB by SERVICE NAME on its INTERNAL port (5432),
+    # not the host-published 5500 — this runs on cortex-net.
+    environment:
+      DSN: "postgresql://${HARNESS_APPDB_USER:-harness}:${HARNESS_APPDB_PASSWORD:-harness}@harness-appdb:5432/${HARNESS_APPDB_DB:-harness_app}"
+    # Apply every *.sql in lexical order, idempotently, stopping on the first error.
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "harness-appdb-migrate: applying .agents/data/appdb/*.sql to $${DSN##*@}"
+        for f in /sql/*.sql; do
+          echo "  -> applying $$f"
+          psql "$$DSN" -v ON_ERROR_STOP=1 -f "$$f"
+        done
+        echo "harness-appdb-migrate: schema converged."
+    volumes:
+      - ./data/appdb:/sql:ro
+    networks:
+      - cortex-net
+    depends_on:
+      harness-appdb:
+        condition: service_healthy
+    # One-shot: run once, exit 0, do NOT restart. The console gates on its
+    # successful completion (service_completed_successfully).
+    restart: "no"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # console — the HEADLESS harness console backend (Milestone 1 T13).
+  #
+  # The FastAPI app (app.main:app) served by uvicorn — the SAME ASGI app as the
+  # dev `uvicorn` run and the packaged pywebview window, no code branches (built
+  # from ../local-cortex/console/Dockerfile). M1 moved live run-state into the
+  # durable app-DB, so this backend is now RESTART-SAFE: restart the container
+  # mid-run and the run-state survives (it lives in run_state/run_span, not
+  # process memory). Single uvicorn worker — the win is restartability, not scale.
+  #
+  # It serves the HTTP / SSE (/runstate/stream) / store / orchestrator / watchdog
+  # surface. Published on 127.0.0.1:8765 (loopback only — single-user local app).
+  #
+  # ⚠️ WORKER-SPAWN BOUNDARY (the honest M1 limit): autonomous worker-spawn is NOT
+  # yet container-resident. The LLM harness CLIs (claude-code / pi) + their login
+  # live on the host, so agent *spawning* stays host-side until the platform
+  # remote harness-service. This container is exactly the first piece that becomes
+  # a service on the platform; the state move did not require the spawn to move
+  # (the detached worker writes the app-DB directly, host-side or in-container).
+  # Do NOT add the harness CLIs to the image.
+  #
+  # depends_on: cortex-api healthy (memory/coordination), harness-appdb healthy
+  # (the operational store), AND harness-appdb-migrate completed (schema converged
+  # before first run-state write).
+  # ─────────────────────────────────────────────────────────────────────
+  console:
+    # OPT-IN ONLY. The redistributable runs the console NATIVE (install.sh → a uvicorn systemd
+    # unit on the host), so a bare `docker compose up` must NOT also start this container console
+    # — two consoles on 127.0.0.1:8765 would collide. This service is reachable only when you ask
+    # for it explicitly: `docker compose --profile containerized up console`.
+    profiles:
+      - containerized
+    build:
+      context: ../local-cortex/console
+      dockerfile: Dockerfile
+    container_name: cortex-console
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    # The container reaches HOST-resident services (the harness-service that owns
+    # the harness CLIs + their OAuth login) via the docker host-gateway alias —
+    # SAME pattern cortex-api already uses for the host Postgres. ADDITIVE: this only
+    # MATTERS once HARNESS_SPAWN_MODE=remote (below) is set; with the flag unset the
+    # console never resolves host.docker.internal, so adding the alias changes
+    # nothing about the default legacy-spawn behaviour.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Local-only env (provider API keys etc.) from local-cortex/.env, same as
+    # cortex-api. K8s/platform ignores this and uses Secrets/ConfigMaps.
+    env_file:
+      - ../local-cortex/.env
+    environment:
+      # In-network endpoints by SERVICE NAME on INTERNAL ports — the console talks
+      # to the app-DB and Cortex API over cortex-net, not the host-published ports.
+      HARNESS_APPDB_DSN: "postgresql://${HARNESS_APPDB_USER:-harness}:${HARNESS_APPDB_PASSWORD:-harness}@harness-appdb:5432/${HARNESS_APPDB_DB:-harness_app}"
+      CORTEX_API_URL: "http://cortex-api:8501"
+      CORTEX_PROJECT: "${CORTEX_PROJECT:-_system}"
+      # EXPLICIT dev mode → auth stays OFF for local operator use. auth_enabled() now
+      # FAILS CLOSED: any deploy that doesn't declare a dev/local mode gets auth ON, so a
+      # hosted console can't silently run open. Local dev must say so — here.
+      KAIDERA_DEPLOY_MODE: "dev"
+      # Harness-service spawn mode is inherited from ../local-cortex/.env via
+      # env_file above. Do not repeat HARNESS_SPAWN_MODE/HOST/PORT/TOKEN here:
+      # Compose interpolation reads the host shell, not env_file, so an explicit
+      # blank default here overrides the dogfood remote harness settings.
+    # LOCAL DOGFOOD ONLY: mount the host workspace so the Workspace file-tree column +
+    # Explain can read repo files. The NATIVE redist console reads them directly; a
+    # containerized console can't without this. Env-driven so it stays portable + a
+    # no-op when unset (mounts /dev/null→/dev/null). Set KAIDERA_WORKSPACE_MOUNT to the
+    # project's repo_root in local-cortex/.env, then recreate the console.
+    volumes:
+      - "${KAIDERA_WORKSPACE_MOUNT:-/dev/null}:${KAIDERA_WORKSPACE_MOUNT:-/dev/null}:ro"
+    depends_on:
+      cortex-api:
+        condition: service_healthy
+      harness-appdb:
+        condition: service_healthy
+      harness-appdb-migrate:
+        condition: service_completed_successfully
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      # The console serves "/" (the full shell) on 8765 — a 200 there means the
+      # ASGI app is up and rendering.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Phase C — additional containers (CTO directive 2026-05-04: host-zero, API-only)
+  # All workers expose internal-only APIs on cortex-net. Only cortex-api is
+  # the public boundary. See local-cortex/CONTAINERIZATION.md for the design.
+  # ─────────────────────────────────────────────────────────────────────
+
+  cortex-cli:
+    build:
+      context: ../local-cortex/containers/cli
+      dockerfile: Dockerfile
+    container_name: cortex-cli
+    restart: unless-stopped
+    env_file:
+      - ../local-cortex/.env
+    environment:
+      PATH: "/app/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      CORTEX_API_BASE: "http://cortex-api:8501"
+      CORTEX_API_URL: "http://cortex-api:8501"
+      CORTEX_PROJECT: "${CORTEX_PROJECT:-_system}"
+      CORTEX_CUSTOMER: "${CORTEX_CUSTOMER:-local}"
+      HOST_PROJECTS_ROOT: "${HOST_PROJECTS_ROOT:-/workspace/projects}"
+      CLAUDE_STATE_ROOT: "${CLAUDE_STATE_ROOT:-/workspace/.claude/projects}"
+    networks:
+      - cortex-net
+    depends_on:
+      cortex-api:
+        condition: service_healthy
+    # Bind-mount the cortex-* scripts read-only so iteration during the
+    # Phase C.1 script-rewrite doesn't require image rebuilds.
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ${HOST_PROJECTS_ROOT:-/workspace/projects}:/projects:ro
+      - ${CLAUDE_STATE_ROOT:-/workspace/.claude/projects}:/claude-state:ro
+      - cortex-vendor:/var/lib/cortex/vendor:ro
+
+  cortex-graph-worker:
+    build:
+      context: ../local-cortex/containers/graph-worker
+      dockerfile: Dockerfile
+    container_name: cortex-graph-worker
+    restart: unless-stopped
+    # NOT published to host — internal cortex-net only. cortex-api is the proxy.
+    expose:
+      - "9001"
+    volumes:
+      - cortex-graphs:/var/lib/cortex/graphs
+      - cortex-models:/var/lib/cortex/models
+      # Bind the workspace projects read-only at /projects.
+      - ${HOST_PROJECTS_ROOT:-/workspace/projects}:/projects:ro
+    environment:
+      CORTEX_GRAPHS_DIR: /var/lib/cortex/graphs
+      PROJECTS_DIR: /projects
+      HOST_PROJECTS_ROOT: ${HOST_PROJECTS_ROOT:-/workspace/projects}
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  cortex-embed-worker:
+    profiles:
+      - local-embed
+    build:
+      context: ../local-cortex/containers/embed-worker
+      dockerfile: Dockerfile
+    container_name: cortex-embed-worker
+    restart: unless-stopped
+    expose:
+      - "9005"
+    volumes:
+      - cortex-models:/var/lib/cortex/models
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  cortex-audio-worker:
+    build:
+      context: ../local-cortex/containers/audio-worker
+      dockerfile: Dockerfile
+    container_name: cortex-audio-worker
+    restart: unless-stopped
+    expose:
+      - "9003"
+    volumes:
+      - cortex-models:/var/lib/cortex/models
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    profiles:
+      - full
+
+  cortex-pdf-worker:
+    build:
+      context: ../local-cortex/containers/pdf-worker
+      dockerfile: Dockerfile
+    container_name: cortex-pdf-worker
+    restart: unless-stopped
+    expose:
+      - "9004"
+    volumes:
+      - cortex-vendor:/var/lib/cortex/vendor
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  cortex-vision-worker:
+    build:
+      context: ../local-cortex/containers/vision-worker
+      dockerfile: Dockerfile
+    container_name: cortex-vision-worker
+    restart: unless-stopped
+    expose:
+      - "9002"
+    volumes:
+      - cortex-models:/var/lib/cortex/models
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_MODELS: "/var/lib/cortex/models/ollama"
+      CORTEX_VISION_MODEL: "qwen3-vl:4b"
+    networks:
+      - cortex-net
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    profiles:
+      - full
+
+networks:
+  cortex-net:
+    name: cortex-net
+    driver: bridge
+
+volumes:
+  cortex-pg-data:
+    name: cortex-pg-data
+  harness-appdb-data:
+    name: harness-appdb-data
+  cortex-graphs:
+    name: cortex-graphs
+  cortex-models:
+    name: cortex-models
+  cortex-vendor:
+    name: cortex-vendor

@@ -1,0 +1,218 @@
+{#
+  DASHBOARD center view (live) — the ALL-PROJECTS overview (cross-project fleet).
+
+  This is the console's landing Dashboard: a KPI strip (fleet-wide totals) over a
+  grid of cards, one per ACTIVE project, each showing REAL vitals (agents · active
+  tasks · pending handoffs · events/24h from /state, fetched concurrently) + a
+  health pill + a best-effort epic-progress strip. Cards are sorted attention-
+  first (busiest pending queues lead) so it answers "who needs attention across
+  the fleet" at a glance.
+
+  Clicking a card SELECTS that project in the rail + scopes cols 2/4 (agents +
+  workspace) to it — it reuses the rail's exact project-select flow
+  (hx-get="/projects/{key}" → #scope-region). The center itself stays on this
+  cross-project Dashboard (Dashboard is not project-scoped).
+
+  Context (built server-side in main._fleet_context — templates do no logic):
+    `fleet_cards`  : sorted list of card views. Each: key, name, repo_root,
+                     pico, initial, agent_count, active_tasks, pending_handoffs,
+                     events_24h, health{state,label}, needs_attention, epic{...}
+    `fleet_count`  : number of active projects
+    `fleet_kpis`   : {projects, agents, active_tasks, pending_handoffs,
+                     events_24h, attention}
+    `selected_key` : the operator's currently-scoped project (highlights its card)
+  A None counter renders as '—' (graceful degrade when a project's /state was
+  unreachable — that card's health pill reads 'no data').
+#}
+<div class="dash dash-fleet">
+  <div class="dash-head">
+    <div class="dash-titlewrap">
+      <h1 class="dash-title"><span class="greet">All projects</span></h1>
+      <div class="dash-sub">
+        <span class="acc">{{ fleet_kpis.projects }} project{{ '' if fleet_kpis.projects == 1 else 's' }}</span>
+        <span class="dot-sep" aria-hidden="true">·</span>
+        <b>{{ fleet_kpis.agents }}</b> agents
+        {% if fleet_kpis.attention %}
+        <span class="dot-sep" aria-hidden="true">·</span>
+        <b class="attn-word">{{ fleet_kpis.attention }}</b> need{{ '' if fleet_kpis.attention == 1 else 's' }} attention
+        {% endif %}
+      </div>
+    </div>
+    <span class="live-tag" title="Live fleet — polls /state every 10s. TODO(SSE): push deltas on /events.">
+      <span class="pulse" aria-hidden="true"></span> live
+    </span>
+  </div>
+
+  {# ===== KPI strip — fleet-wide vitals (the zoom-out) ===== #}
+  <div class="kpis">
+    <div class="kpi">
+      <div class="k-top">
+        <span class="k-ic run">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </span>
+        <span class="k-lab">Agents</span>
+      </div>
+      <div class="k-val">{{ fleet_kpis.agents }}<span class="unit">/ {{ fleet_kpis.projects }} project{{ '' if fleet_kpis.projects == 1 else 's' }}</span></div>
+    </div>
+
+    <div class="kpi">
+      <div class="k-top">
+        <span class="k-ic {{ 'warn' if fleet_kpis.attention else '' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        </span>
+        <span class="k-lab">Needs attention</span>
+      </div>
+      <div class="k-val">{{ fleet_kpis.attention }}<span class="unit">project{{ '' if fleet_kpis.attention == 1 else 's' }}</span></div>
+      <div class="k-foot">high pending queues, sorted first</div>
+    </div>
+
+    <div class="kpi">
+      <div class="k-top">
+        <span class="k-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9.5L21 9.5V15a2 2 0 0 1-2 2h-4M9 17l3 3 3-3M12 12v8"/></svg>
+        </span>
+        <span class="k-lab">Pending handoffs</span>
+      </div>
+      <div class="k-val">{{ fleet_kpis.pending_handoffs }}<span class="unit">fleet-wide</span></div>
+      <div class="k-foot">{{ fleet_kpis.active_tasks }} active task{{ '' if fleet_kpis.active_tasks == 1 else 's' }}</div>
+    </div>
+
+    <div class="kpi">
+      <div class="k-top">
+        <span class="k-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </span>
+        <span class="k-lab">Events · 24h</span>
+      </div>
+      <div class="k-val">{{ fleet_kpis.events_24h }}<span class="unit">all projects</span></div>
+    </div>
+  </div>
+
+  {# ===== Projects section — one card per active project ===== #}
+  <div class="dash-block">
+    <div class="sec-head">
+      <h2>Projects</h2>
+      <span class="sh-count {{ 'warn' if fleet_kpis.attention else '' }}">{{ fleet_count }}</span>
+      <span class="sh-line" aria-hidden="true"></span>
+    </div>
+
+    {% if fleet_cards %}
+    <div class="pcards">
+      {% for c in fleet_cards %}
+      {#
+        The card has TWO actions (two sibling buttons inside a .pcard wrapper —
+        valid HTML, no nested interactive elements):
+          1. .pc-main (the head + epic body) SCOPES the app to this project via
+             the SAME flow the rail uses (GET /projects/{key} → #scope-region),
+             re-rendering col-2 (agents) + col-4 (workspace). The center stays on
+             this cross-project Dashboard.
+          2. .pc-drill (the footer "open ›" affordance) DRILLS IN — swaps the
+             center to this project's detail view (GET /projects/{key}/detail →
+             #center-region) with the full open-handoffs + tasks lists.
+        .attn marks a needs-attention card; .is-selected marks the scoped one.
+      #}
+      <div class="pcard {{ 'attn' if c.needs_attention else '' }} {{ 'is-selected' if c.key == selected_key else '' }}" data-project-key="{{ c.key }}">
+      <button
+        type="button"
+        class="pc-main"
+        data-project-key="{{ c.key }}"
+        hx-get="/projects/{{ c.key }}"
+        hx-target="#scope-region"
+        hx-swap="innerHTML"
+        title="Scope the console to {{ c.name }} ({{ c.repo_root or 'no worktree' }})"
+      >
+        <div class="pc-head">
+          <span class="pc-ico {{ c.pico }}">{{ c.initial }}</span>
+          <div class="pc-id">
+            <div class="pc-name">{{ c.name }}</div>
+            <div class="pc-role">{{ c.agent_count if c.agent_count is not none else '—' }} agent{{ '' if c.agent_count == 1 else 's' }}{% if c.key == selected_key %} · <b>scoped</b>{% endif %}</div>
+          </div>
+          {# health pill — derived from the /state read (liveness + queue pressure) #}
+          <span class="pc-flag {{ 'alert' if c.health.state == 'down' else ('wait' if c.health.state == 'busy' else 'calm') }}" title="{{ c.health.label }}">
+            <i class="fdot"></i>{{ c.health.label }}
+          </span>
+        </div>
+
+        {#
+          Epic-progress strip — LIVE from GET /epics (shaped server-side in
+          main._epic_strip_view; templates do no logic). mode='epics' surfaces
+          the HEADLINE epic (active/build, else most-complete): epic_id · title ·
+          overall % bar + a compact per-increment bar (done/prog/todo segments),
+          with "+N more" when the project has further epics. mode='continuous'
+          renders the 'continuous · no epics' idle strip (continuous-backlog
+          projects, projects with no epics, OR a graceful-degrade when /epics was
+          unreachable — never fabricated progress).
+          `c.epic` = {mode, label, epic_id, overall_pct, increments[], extra}.
+        #}
+        <div class="pc-epic">
+          <div class="pe-row">
+            {% if c.epic.mode == 'epics' %}
+            <span class="pe-eid">{{ c.epic.epic_id }}</span>
+            <span class="pe-enm">{{ c.epic.label }}{% if c.epic.extra > 0 %} <span class="pe-more">+{{ c.epic.extra }} more</span>{% endif %}</span>
+            <span class="pe-pct">{{ c.epic.overall_pct }}%</span>
+            {% else %}
+            <span class="pe-eid">epics</span>
+            <span class="pe-enm">{{ c.epic.label }}</span>
+            <span class="pe-pct pe-tbd" title="continuous backlog — no epic structure">none</span>
+            {% endif %}
+          </div>
+          <div class="pe-track">
+            {% if c.epic.mode == 'epics' %}
+            <div class="pe-fill {{ 'ok' if c.epic.overall_pct == 100 else '' }}" style="width: {{ c.epic.overall_pct }}%"></div>
+            {% else %}
+            <div class="pe-fill idle pe-fill-tbd" style="width: 100%"></div>
+            {% endif %}
+          </div>
+          {% if c.epic.increments %}
+          {# per-increment segments: done=green / prog=teal / todo=empty. #}
+          <div class="pe-incs pe-incs-row">
+            {% for inc in c.epic.increments %}
+            <span
+              class="pe-seg k-{{ inc.kind }}"
+              title="Inc{{ inc.num }} · {{ inc.title }} — {{ inc.status or 'not started' }} ({{ inc.pct }}%)"
+            ><span class="pe-seg-fill" style="width: {{ inc.pct }}%"></span></span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </button>{# /.pc-main (scope) #}
+
+      {#
+        vitals footer — the real /state counters + the DRILL-IN affordance.
+        Sits OUTSIDE .pc-main so the drill-in button is a valid sibling (no
+        nested interactive elements). The footer's "open ›" button swaps the
+        CENTER to this project's detail view (full handoffs + tasks lists).
+      #}
+      <div class="pc-foot">
+        <span class="pc-vital">
+          <span class="pv-n">{{ c.active_tasks if c.active_tasks is not none else '—' }}</span>
+          <span class="pv-l">active</span>
+        </span>
+        <span class="pc-vital {{ 'pv-warn' if c.needs_attention else '' }}">
+          <span class="pv-n">{{ c.pending_handoffs if c.pending_handoffs is not none else '—' }}</span>
+          <span class="pv-l">pending</span>
+        </span>
+        <span class="pc-vital">
+          <span class="pv-n">{{ c.events_24h if c.events_24h is not none else '—' }}</span>
+          <span class="pv-l">events 24h</span>
+        </span>
+        <button
+          type="button"
+          class="pc-drill"
+          hx-get="/projects/{{ c.key }}/detail"
+          hx-target="#center-region"
+          hx-swap="innerHTML"
+          title="Open {{ c.name }} — full handoffs + tasks"
+        >
+          details
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+      </div>{# /.pcard #}
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No active projects returned by Cortex.</p>
+    {% endif %}
+  </div>
+</div>

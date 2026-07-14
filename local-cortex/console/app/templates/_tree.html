@@ -1,0 +1,105 @@
+{#
+  WORKSPACE FILE TREE — one directory's entries (project-scoped).
+
+  Rendered for a single directory under the selected project's repo_root and
+  returned as an HTMX fragment. The ROOT listing is included by _workspace.html;
+  each folder lazy-loads ITS OWN children (this same fragment) on first expand.
+
+  Vars:
+    entries        : list[workspace.Entry]  (dirs-first, then lexicographic; hidden incl.)
+    ws_project_key : the scoped project key  (for child hx-get URLs)
+    ws_parent      : rel-path of the directory these entries belong to ("" = root)
+    ws_error       : set when the directory could not be listed (escape / missing)
+
+  Behaviour (matches the prototype):
+    - Folder rows toggle open client-side (toggleTreeNode) and lazy-load children.
+    - FILE rows OPEN IN THE CENTER PANE on click (openWsFile → preview, with an
+      Edit toggle). Right column is the tree only; the center is preview + edit.
+    - Every row carries a drag handle (move via drag-drop onto a folder) and a ⋯
+      button + right-click that opens the context menu (open · rename · move ·
+      new file/folder · delete). Hidden dotfiles render dimmed.
+#}
+{% if ws_error %}
+  <div class="tree-error" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+    <span>{{ ws_error }}</span>
+  </div>
+{% elif not entries %}
+  <div class="tree-empty">empty</div>
+{% else %}
+  {% for e in entries %}
+  {% set hidden = e.name.startswith('.') %}
+  {%- set ext = e.name.rsplit('.', 1)[1] | lower if '.' in e.name else '' -%}
+  {%- if e.name.endswith('.excalidraw.md') or e.name.endswith('.excalidraw') -%}{% set kind = 'excal' %}
+  {%- elif ext in ('md','markdown') -%}{% set kind = 'md' %}
+  {%- elif ext == 'py' -%}{% set kind = 'py' %}
+  {%- elif ext in ('html','htm') -%}{% set kind = 'html' %}
+  {%- elif ext == 'sql' -%}{% set kind = 'sql' %}
+  {%- elif ext == 'json' -%}{% set kind = 'json' %}
+  {%- elif ext in ('yaml','yml') -%}{% set kind = 'yaml' %}
+  {%- elif ext in ('sh','bash','zsh') -%}{% set kind = 'sh' %}
+  {%- elif ext == 'txt' -%}{% set kind = 'txt' %}
+  {%- else -%}{% set kind = 'file' %}{%- endif -%}
+  <div class="tnode" data-path="{{ e.rel_path }}" data-dir="{{ '1' if e.is_dir else '0' }}">
+    {% if e.is_dir %}
+    {#
+      Folder row: toggles open/closed via JS; lazy-loads its children into the
+      sibling .tchildren on the first open. Draggable + has its own ⋯ menu.
+    #}
+    <div
+      class="trow is-dir {{ 'is-hidden' if hidden else '' }}"
+      onclick="toggleTreeNode(this)"
+      oncontextmenu="openWsCtxMenu(event, this)"
+      draggable="true"
+      data-path="{{ e.rel_path }}"
+      data-name="{{ e.name }}"
+      data-dir="1"
+      title="{{ e.rel_path }}"
+    >
+      <span class="tdrag" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+      <span class="ttw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+      <svg class="tic dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span class="tname">{{ e.name }}/</span>
+      <button class="tdots" type="button" onclick="event.stopPropagation(); openWsCtxMenu(event, this.closest('.trow'))" title="Actions" aria-label="Actions for {{ e.name }}">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </button>
+    </div>
+    <div
+      class="tchildren"
+      data-loaded="0"
+      hx-get="/workspace/{{ ws_project_key }}/tree?path={{ e.rel_path | urlencode }}"
+      hx-trigger="load-children once"
+      hx-swap="innerHTML"
+    ></div>
+    {% else %}
+    {#
+      File row: CLICK opens it in the CENTER pane in preview (openWsFile).
+      Draggable (move) + ⋯ menu. Excalidraw and other files all open the same
+      center pane; the pane renders the drawing or text per type.
+    #}
+    <div
+      class="trow {{ 'is-hidden' if hidden else '' }}"
+      onclick="openWsFile('{{ ws_project_key }}', '{{ e.rel_path | e }}', this)"
+      oncontextmenu="openWsCtxMenu(event, this)"
+      draggable="true"
+      data-path="{{ e.rel_path }}"
+      data-name="{{ e.name }}"
+      data-dir="0"
+      title="{{ e.rel_path }}{{ ' · %d B' % e.size if e.size is not none else '' }}"
+    >
+      <span class="tdrag" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+      <span class="ttw leaf" aria-hidden="true"></span>
+      {% if kind == 'excal' %}
+      <svg class="tic excal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 3h18v18H3z"/><path d="M7 7h4v4H7zM14 13h3v3h-3z"/><path d="M11 9h3"/></svg>
+      {% else %}
+      <svg class="tic {{ kind }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      {% endif %}
+      <span class="tname">{{ e.name }}</span>
+      <button class="tdots" type="button" onclick="event.stopPropagation(); openWsCtxMenu(event, this.closest('.trow'))" title="Actions" aria-label="Actions for {{ e.name }}">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </button>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% endif %}

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Host launcher for the harness-service (harness-service Increment 2).
+#
+# Mirrors scripts/run-agent, but runs the STANDALONE host service
+# (app/harness_service.py) instead of a single worker. The service owns the harness
+# CLIs (claude-code / pi) + their interactive OAuth login — which live on the HOST —
+# and spawns `run-agent` workers on the host when the container's RemoteHarnessAdapter
+# POSTs /spawn. It binds LOOPBACK only (127.0.0.1:${HARNESS_SERVICE_PORT:-8766}); the
+# container reaches it via the docker host-gateway (I3 compose wiring).
+#
+# OPERATOR: start this on the host BEFORE enabling remote mode in the console
+# (HARNESS_SPAWN_MODE=remote). Set HARNESS_SERVICE_TOKEN to require the shared bearer
+# token (a blank token disables auth + logs a startup WARNING).
+#
+# Paths are derived from THIS script's own location (never a hardcoded personal path),
+# so it stays drop-in across hosts: scripts/ -> console -> local-cortex -> repo root.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$CONSOLE/../.." && pwd)"
+export PATH="$PATH:$REPO_ROOT/.agents/scripts"
+# Run from the console dir so `python -m app.harness_service` resolves the package
+# (otherwise ModuleNotFoundError: app when launched from any other cwd).
+cd "$CONSOLE"
+exec "$CONSOLE/.venv/bin/python" -m app.harness_service "$@"

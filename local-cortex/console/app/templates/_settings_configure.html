@@ -1,0 +1,321 @@
+{#
+  SETTINGS · Configure (R4c, FUNCTIONAL). A per-agent harness/model/reasoning
+  configurator for the SELECTED project. Lists the project's agents (from
+  /projects/{key}/runtime, falling back to /roster) and, per agent, three
+  editable dropdowns:
+
+    - harness   : claude-code · codex · kaidera · pi
+    - model     : populated PER harness from each CLI/provider catalog, with
+                  curated fallbacks only when discovery is unavailable. Changing
+                  the harness re-populates
+                  the model + reasoning dropdowns CLIENT-SIDE from cfg_harness_map
+                  (no round-trip).
+    - reasoning : populated from the selected model's discovered effort levels.
+
+  Each row shows the agent's CURRENT EFFECTIVE config — the registry value (from
+  runtime capabilities) overlaid with any console-local override. Save POSTs that
+  one agent's override to the console app-DB settings store and
+  swaps a per-row confirmation banner in place.
+
+  NOTE — console-local overrides (feature-gap #81, the CTO's reversed decision):
+    The override is saved CONSOLE-LOCAL ONLY (app-DB — the fast display/routing
+    overlay). The Cortex agent registry (the source of truth, E006
+    Inc04) is NOT written on save; committing the config to the registry is the explicit
+    "Promote to registry" action in the SPA config modal (POST .../promote → the
+    `POST /agents` UPSERT whose conflict-update jsonb-merges `capabilities`).
+
+  PROFILE (designation + role):
+    Each card also edits the agent PROFILE — a `designation` (Interactive-Lead /
+    Non-interactive AI worker / Deterministic / registry-default) and a free-text
+    `role` override. Worker type drives the col-2 Interactive vs AI Workers grouping OVERRIDE-FIRST: an explicit
+    designation wins over the registry-derived heuristic. Blank ("Registry default")
+    falls back to the heuristic. Saved through the SAME POST /settings/configure
+    (console-local only; designation classification layers locally until the Cortex
+    roster_policy lands).
+
+  Context:
+    selected_key        : current project key
+    cfg_agents          : [{name, display_name, initials, role,
+                            reg_harness, reg_harness_label, reg_model, reg_reasoning,
+                            reg_role, reg_designation,
+                            harness, harness_label, model, reasoning, designation,
+                            ov_harness, ov_model, ov_reasoning, ov_designation,
+                            ov_role, has_override,
+                            model_is_catalog, model_options, model_groups,
+                            reasoning_levels, designation_options}]
+    cfg_agent_count     : number of agents
+    cfg_harness_options : [{value,label}] for the harness <select>
+    cfg_harness_map     : JSON str → {harnesses:{...}, catalog:[...]} for the
+                          client-side dropdown repopulation
+    cfg_catalog_total   : model count in the Providers catalog (for the note)
+#}
+<div class="set-inner">
+  <div class="set-page on" id="setpage-configure">
+    <div class="set-page-h">Configure</div>
+    <div class="set-page-sub">Per-agent <b>harness</b>, <b>model</b>, and <b>reasoning/effort</b> for <b>{{ selected_key or "Kaidera OS" }}</b>. Each agent's <b>effective</b> config is its registry value (from the live runtime) overlaid with any console-local override. The model list changes with the harness — <b>kaidera</b>/<b>pi</b> pull from the <b>Providers&nbsp;&amp;&nbsp;Models</b> catalog ({{ cfg_catalog_total }} models).</div>
+
+    {# console-local overrides — fast display overlay; the registry is NOT written on save #}
+    <div class="set-banner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+      <div><b>Saved locally.</b> Each change is stored in the console app-DB (the fast display/routing overlay); the <b>Cortex agent registry</b> (the source of truth, E006&nbsp;Inc04) stays authoritative and is <b>not</b> written on save. To commit an agent's config to the registry, use <b>Promote to registry</b> in the agent's config panel. Blank a field to fall back to the registry value.</div>
+    </div>
+
+    {% if cfg_agents %}
+    <div class="cfg-list">
+      {% for a in cfg_agents %}
+      {#
+        One agent configurator card. The form POSTs just this agent's override to
+        /settings/configure; the result banner swaps into this card's own
+        #cfg-saved-<name> slot (so saving one agent doesn't disturb the others).
+      #}
+      <form
+        class="cfg-card"
+        data-agent="{{ a.name }}"
+        hx-post="/settings/configure?project={{ selected_key or '' }}"
+        hx-target="#cfg-saved-{{ a.name }}"
+        hx-swap="innerHTML"
+      >
+        <input type="hidden" name="agent" value="{{ a.name }}" />
+
+        <header class="cfg-card-h">
+          <span class="cfg-av">{{ a.initials }}</span>
+          <span class="cfg-id">
+            <span class="cfg-nm">{{ a.display_name }}</span>
+            <span class="cfg-role">{{ a.role }}</span>
+          </span>
+          {% if a.designation == "interactive" %}
+          <span class="cfg-destag interactive" title="Classified Interactive (a lead you talk to){{ ' — console override' if a.ov_designation else ' — registry default' }}">Interactive · Lead</span>
+          {% else %}
+          <span class="cfg-destag autonomous" title="Classified as an AI Worker{{ ' — console override' if a.ov_designation else ' — registry default' }}">{{ 'Deterministic' if a.designation == 'deterministic' else 'AI Worker' }}</span>
+          {% endif %}
+          {% if a.has_override %}
+          <span class="cfg-ovflag" title="This agent has a console-local override layered over its registry value">override</span>
+          {% endif %}
+        </header>
+
+        {# ---------- PROFILE: worker type + role (drives col-2 grouping) ---------- #}
+        <div class="cfg-profile">
+          {# ---------- worker type (Interactive-Lead / AI Worker / Deterministic) ----------
+            The <select> represents the OVERRIDE: when an override is set its
+            value is selected; with no override the "" (Registry default) option
+            is selected (classification then follows the registry heuristic). #}
+          {% set sel_designation = a.designation if a.ov_designation else '' %}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Worker type {% if a.ov_designation %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <select class="cfg-select" name="designation" data-role="designation">
+              {% for opt in a.designation_options %}
+              <option value="{{ opt.value }}" {{ 'selected' if sel_designation == opt.value else '' }}>{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+            <span class="cfg-reg">registry: <code>{{ a.reg_designation or "—" }}</code> · internal worker type</span>
+          </label>
+
+          {# ---------- auto-run eligibility ----------
+            Worker type controls chat/model capability. This flag separately controls
+            whether project dispatch may auto-run handoffs assigned to this agent. #}
+          {% set sel_auto_dispatch = 'true' if a.ov_auto_dispatch and a.auto_dispatch else ('false' if a.ov_auto_dispatch else '') %}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Allow auto-run when assigned {% if a.ov_auto_dispatch %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <select class="cfg-select" name="auto_dispatch" data-role="auto_dispatch">
+              <option value="" {{ 'selected' if sel_auto_dispatch == '' else '' }}>Registry default</option>
+              <option value="true" {{ 'selected' if sel_auto_dispatch == 'true' else '' }}>Enabled</option>
+              <option value="false" {{ 'selected' if sel_auto_dispatch == 'false' else '' }}>Disabled</option>
+            </select>
+            <span class="cfg-reg">effective: <code>{{ "enabled" if a.auto_dispatch else "disabled" }}</code> · requires global engine + project dispatch</span>
+          </label>
+
+          {# ---------- role (free-text override) ---------- #}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Role {% if a.ov_role %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <input
+              class="cfg-input"
+              type="text"
+              name="role"
+              value="{{ a.role if a.ov_role else '' }}"
+              placeholder="{{ a.reg_role }}"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span class="cfg-reg">registry: <code>{{ a.reg_role or "—" }}</code> · blank uses the registry role</span>
+          </label>
+        </div>
+
+        <div class="cfg-grid">
+
+          {# ---------- harness ---------- #}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Harness {% if a.ov_harness %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <select
+              class="cfg-select"
+              name="harness"
+              data-role="harness"
+              onchange="onHarnessChange(this)"
+            >
+              {% for opt in cfg_harness_options %}
+              <option value="{{ opt.value }}" {{ 'selected' if a.harness == opt.value else '' }}>{{ opt.label }}</option>
+              {% endfor %}
+              {# tolerate an unknown current harness (still show it as selected) #}
+              {% if a.harness and a.harness not in (cfg_harness_options | map(attribute='value') | list) %}
+              <option value="{{ a.harness }}" selected>{{ a.harness_label }}</option>
+              {% endif %}
+            </select>
+            <span class="cfg-reg">registry: <code>{{ a.reg_harness_label }}</code></span>
+          </label>
+
+          {# ---------- model (populated per harness) ---------- #}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Model {% if a.ov_model %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <select class="cfg-select" name="model" data-role="model">
+              {% if a.model_is_catalog %}
+                {# kaidera/pi → grouped provider catalog #}
+                {% for g in a.model_groups %}
+                <optgroup label="{{ g.label }}">
+                  {% for m in g.models %}
+                  <option value="{{ m.value }}" {{ 'selected' if a.model == m.value else '' }}>{{ m.label }}</option>
+                  {% endfor %}
+                </optgroup>
+                {% endfor %}
+              {% else %}
+                {# subscription lane → fixed per-harness set #}
+                {% for m in a.model_options %}
+                <option value="{{ m.value }}" {{ 'selected' if a.model == m.value else '' }}>{{ m.label }}</option>
+                {% endfor %}
+              {% endif %}
+              {# tolerate a current model not in the option set (registry/legacy) #}
+              {% if a.model %}<option value="{{ a.model }}" {{ 'selected' if not a.model_is_catalog and a.model not in (a.model_options | map(attribute='value') | list) else '' }} class="cfg-opt-current">{{ a.model }}</option>{% endif %}
+            </select>
+            <span class="cfg-reg">registry: <code>{{ a.reg_model or "—" }}</code></span>
+          </label>
+
+          {# ---------- reasoning / effort (per harness) ---------- #}
+          <label class="cfg-field">
+            <span class="cfg-lbl">Reasoning {% if a.ov_reasoning %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
+            <select class="cfg-select" name="reasoning" data-role="reasoning">
+              {% for lvl in a.reasoning_levels %}
+              <option value="{{ lvl }}" {{ 'selected' if a.reasoning == lvl else '' }}>{{ lvl }}</option>
+              {% endfor %}
+              {% if a.reasoning and a.reasoning not in a.reasoning_levels %}
+              <option value="{{ a.reasoning }}" selected>{{ a.reasoning }}</option>
+              {% endif %}
+            </select>
+            <span class="cfg-reg">registry: <code>{{ a.reg_reasoning or "—" }}</code></span>
+          </label>
+
+        </div>
+
+        <div class="cfg-card-foot">
+          <button class="cfg-save" type="submit">Save override</button>
+          {# per-row save-result banner swaps in here #}
+          <span class="cfg-saved-slot" id="cfg-saved-{{ a.name }}"></span>
+        </div>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="set-stub">
+      <div class="ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="9" cy="7" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0M16 4.2a3.2 3.2 0 0 1 0 5.6M21 20a6 6 0 0 0-4-5.6"/></svg>
+      </div>
+      <h4>No agents</h4>
+      <p>No agents are registered for <b>{{ selected_key or "this project" }}</b> in the live runtime. Agents are added via <code>cortex-add-agent</code>; once registered they appear here for harness/model/reasoning configuration.</p>
+    </div>
+    {% endif %}
+
+    <p class="cfg-foot-note">
+      Harness → model → reasoning relationships follow each installed CLI or connected provider's current catalog. Curated model data is used only when discovery is unavailable.
+    </p>
+  </div>
+</div>
+
+{# Static harness→{models,reasoning}+catalog map for client-side repopulation. #}
+<script id="cfg-harness-map" type="application/json">{{ cfg_harness_map | safe }}</script>
+<script>
+  // Configure (R4c): when an agent's HARNESS <select> changes, rebuild that
+  // row's MODEL + REASONING <select> options from the static map — no server
+  // round-trip. The map carries the fixed per-harness model sets, the per-
+  // harness reasoning levels, and the provider catalog (for kaidera/pi).
+  (function () {
+    var raw = document.getElementById("cfg-harness-map");
+    if (!raw) return;
+    var MAP;
+    try { MAP = JSON.parse(raw.textContent || "{}"); } catch (e) { MAP = { harnesses: {}, catalog: [] }; }
+
+    // Expose a single handler the inline onchange calls.
+    window.onHarnessChange = function (sel) {
+      var harness = sel.value;
+      var card = sel.closest(".cfg-card");
+      if (!card) return;
+      var spec = (MAP.harnesses || {})[harness];
+      if (!spec) return; // unknown harness → leave existing options
+
+      var modelSel = card.querySelector('select[data-role="model"]');
+      var reasonSel = card.querySelector('select[data-role="reasoning"]');
+
+      if (modelSel) {
+        var prev = modelSel.value;
+        rebuildModel(modelSel, spec, MAP.catalog || []);
+        // try to preserve the prior choice if it's still a valid option
+        restoreSelection(modelSel, prev);
+      }
+      if (reasonSel) {
+        var prevR = reasonSel.value;
+        rebuildOptions(reasonSel, (spec.reasoning || []).map(function (v) {
+          return { value: v, label: v };
+        }));
+        restoreSelection(reasonSel, prevR);
+      }
+    };
+
+    // Replace a <select>'s options with a flat [{value,label}] list.
+    function rebuildOptions(sel, options) {
+      sel.replaceChildren();
+      options.forEach(function (o) {
+        var opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        sel.appendChild(opt);
+      });
+    }
+
+    // Rebuild a MODEL <select>: fixed list (flat) or catalog (grouped optgroups).
+    function rebuildModel(sel, spec, catalog) {
+      sel.replaceChildren();
+      if (spec.model_source === "catalog") {
+        catalog.forEach(function (g) {
+          var og = document.createElement("optgroup");
+          og.label = g.label || g.provider || "";
+          (g.models || []).forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m.value;
+            opt.textContent = m.label;
+            og.appendChild(opt);
+          });
+          if (og.children.length) sel.appendChild(og);
+        });
+        if (!sel.children.length) {
+          // No catalog models (no provider keys set) → a single hint option.
+          var hint = document.createElement("option");
+          hint.value = "";
+          hint.textContent = "— configure a provider key in Settings —";
+          sel.appendChild(hint);
+        }
+      } else {
+        (spec.models || []).forEach(function (m) {
+          var opt = document.createElement("option");
+          opt.value = m.value;
+          opt.textContent = m.label;
+          sel.appendChild(opt);
+        });
+      }
+    }
+
+    // If `value` is still one of the select's options, re-select it.
+    function restoreSelection(sel, value) {
+      if (!value) return;
+      var opts = sel.querySelectorAll("option");
+      for (var i = 0; i < opts.length; i++) {
+        if (opts[i].value === value) { sel.value = value; return; }
+      }
+    }
+  })();
+</script>

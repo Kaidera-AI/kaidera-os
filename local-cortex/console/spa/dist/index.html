@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/app/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#060a0e" />
+    <title>Kaidera OS</title>
+    <!-- Apply the saved theme BEFORE the bundle paints, to avoid a dark→light flash. -->
+    <script>
+      try {
+        var t = localStorage.getItem('kaidera-os:theme') === 'light' ? 'light' : 'dark'
+        var el = document.documentElement
+        el.classList.remove('dark', 'light')
+        el.classList.add(t)
+        el.style.colorScheme = t
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/app/assets/index-D0qW3EZa.js"></script>
+    <link rel="stylesheet" crossorigin href="/app/assets/index-CdunUKiG.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

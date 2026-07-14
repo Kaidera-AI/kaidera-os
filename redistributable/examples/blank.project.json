@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "preset": "first-project-minimal",
+  "project": {
+    "key": "new-project",
+    "name": "New Project",
+    "root": "${CORTEX_PROJECT_ROOT}",
+    "team_name": "New Project Team",
+    "scope": "Describe what this project should achieve and what the lead worker should understand."
+  },
+  "roles": [
+    {
+      "slug": "lead",
+      "label": "Lead Worker",
+      "responsibilities": "Own the user conversation, clarify goals, and coordinate project work.",
+      "standard": true
+    }
+  ],
+  "agents": [
+    {
+      "name": "lead",
+      "role": "lead",
+      "display_name": "Lead",
+      "responsibilities": "Own the user conversation, clarify goals, and coordinate project work.",
+      "harness": "kaidera",
+      "capabilities": {
+        "designation": "interactive",
+        "persona_brief": "Describe what this project should achieve and what the lead worker should understand."
+      },
+      "pane": {
+        "title": "Lead",
+        "color": "green",
+        "order": 0
+      }
+    }
+  ],
+  "model_requirements": [
+    {
+      "type": "llm",
+      "required": true,
+      "purpose": "Main agent chat and reasoning model."
+    },
+    {
+      "type": "embedding",
+      "required": true,
+      "purpose": "Semantic search over Cortex memory."
+    },
+    {
+      "type": "reranking",
+      "required": true,
+      "purpose": "Post-retrieval reranking."
+    }
+  ],
+  "beat": {
+    "orchestrator_agent": "lead",
+    "cadence_minutes": 25,
+    "progress_provider": "none"
+  }
+}

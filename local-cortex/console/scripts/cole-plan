@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Console helper to PLAN an epic's handoffs into dependency WAVES.
+
+E007 Phase 1.5 of the autonomous orchestrator (the dispatch loop). The Phase-1 loop
+dispatches every pending handoff as soon as it lands (a flat queue). This helper
+lets an operator tag handoffs with an EPIC + a WAVE so the orchestrator runs them in dependency
+order: parallel WITHIN a wave (capped by the existing concurrency cap), sequential
+ACROSS waves (a wave is ~ an increment). The orchestrator dispatches only the LOWEST wave (per
+epic) that still has incomplete handoffs, and advances to wave N+1 only when every
+handoff in wave N is complete in Cortex.
+
+This is the CONSOLE-DOMAIN companion to the orchestrator change in
+app/orchestrator.py: it writes the plan rows the loop reads. It writes ONLY the
+app-DB `handoff_orchestration` table (the operational store) — it never mutates
+Cortex (it only READS Cortex handoff status for the --show DAG print).
+
+USAGE
+-----
+  Record a handoff into a wave (UPSERT — re-run to re-plan a handoff):
+    cole-plan <handoff_id> --epic <E> --wave <N> --project <project>
+
+  Print a project's planned DAG (each handoff → epic/wave + live Cortex status):
+    cole-plan --show --project <p> [--epic <E>]
+
+NOTES
+  * <handoff_id> is the Cortex handoff UUID (the bare uuid, or a compound
+    "uuid:hex" — the hex is stripped). Wave 0 means "dispatch immediately, no
+    dependency" (the Phase-1 behaviour); a handoff with NO plan row is also wave 0.
+  * --project is required unless CORTEX_CONSOLE_DEFAULT_PROJECT is set. --wave defaults to 0.
+  * Reads the app-DB DSN from HARNESS_APPDB_DSN (default the loopback harness-appdb
+    on :5500) and Cortex from CORTEX_BASE_URL (default http://localhost:8501),
+    exactly like the console.
+  * Robust + graceful: if the app-DB is down the write/show reports it and exits
+    non-zero rather than crashing; the Cortex status column degrades to "?" when
+    Cortex is unreachable (the plan still prints).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+# Make the console package importable so we reuse its app-DB accessor (the SAME
+# graceful-degrade store the console writes through). scripts/ -> console/.
+_CONSOLE_DIR = Path(__file__).resolve().parents[1]
+if str(_CONSOLE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONSOLE_DIR))
+
+try:
+    from app import appdb as appdb_store  # noqa: E402
+except Exception as exc:  # pragma: no cover - import guard
+    sys.stderr.write(f"cole-plan: cannot import the console app-DB layer: {exc}\n")  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+    sys.exit(2)
+
+_DEFAULT_PROJECT = os.environ.get("CORTEX_CONSOLE_DEFAULT_PROJECT", "").strip()
+_CORTEX_BASE_URL = os.environ.get("CORTEX_BASE_URL", "http://localhost:8501").rstrip("/")
+_CONSOLE_AGENT = (
+    os.environ.get("CORTEX_CONSOLE_AGENT")
+    or os.environ.get("CORTEX_AGENT")
+    or "console"
+).strip()
+
+# Cortex handoff statuses that count as COMPLETE/terminal (a wave's handoff is
+# "done" when its status is one of these). MUST match the orchestrator's
+# _is_handoff_complete terminal set so the --show DAG agrees with what the loop
+# will actually gate on.
+_TERMINAL_STATUSES = (
+    "completed", "complete", "done", "closed", "cancelled", "canceled", "resolved",
+)
+
+
+def _bare_id(handoff_id: str) -> str:
+    """Strip a compound 'uuid:hex' down to the bare uuid the app-DB keys on."""
+    tok = (handoff_id or "").strip()
+    if ":" in tok:
+        tok = tok.split(":", 1)[0]
+    return tok.strip()
+
+
+def _cortex_status_for(project: str) -> dict[str, str]:
+    """{handoff_id: status} for a project's handoffs from the live Cortex API.
+
+    Read-only GET /handoffs (the same call the console makes). Returns {} when
+    Cortex is unreachable so the DAG still prints (statuses show as '?')."""
+    try:
+        import httpx  # noqa: WPS433
+    except Exception:
+        return {}
+    try:
+        resp = httpx.get(
+            f"{_CORTEX_BASE_URL}/handoffs",
+            headers={"X-Project": project, "X-Agent-Name": _CONSOLE_AGENT},
+            timeout=httpx.Timeout(5.0, connect=2.0),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return {}
+    rows = data.get("handoffs", []) if isinstance(data, dict) else []
+    out: dict[str, str] = {}
+    for h in rows:
+        hid = str(h.get("id") or "").strip()
+        if not hid:
+            continue
+        status = (h.get("status") or "").strip().lower() or "pending"
+        # A claimed-but-open handoff reads as in-flight, not terminal.
+        if h.get("claimed_by") and status not in _TERMINAL_STATUSES:
+            status = "claimed"
+        out[hid] = status
+    return out
+
+
+def _project_or_error(value: str | None) -> str | None:
+    project = (value or "").strip()
+    if project:
+        return project.lower()
+    sys.stderr.write(
+        "cole-plan: --project is required unless CORTEX_CONSOLE_DEFAULT_PROJECT is set.\n"  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+    )
+    return None
+
+
+def _cmd_record(args: argparse.Namespace) -> int:
+    """Record (UPSERT) one handoff's epic/wave plan row."""
+    project = _project_or_error(args.project)
+    if not project:
+        return 2
+    hid = _bare_id(args.handoff_id)
+    if not hid:
+        sys.stderr.write("cole-plan: a non-blank <handoff_id> is required.\n")  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+        return 2
+    if args.wave < 0:
+        sys.stderr.write("cole-plan: --wave must be >= 0 (0 = dispatch immediately).\n")  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+        return 2
+
+    db = appdb_store.settings_db
+    ok = db.upsert_handoff_plan(hid, project, args.epic, args.wave)
+    if not ok:
+        sys.stderr.write(
+            "cole-plan: could not write the plan row — the app-DB is unavailable "  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+            f"({appdb_store._safe_dsn(db.dsn)}). Is harness-appdb up?\n"
+        )
+        return 1
+    epic_lbl = args.epic or "(no epic)"
+    print(
+        f"planned {hid}  →  epic {epic_lbl} · wave {args.wave}  "
+        f"[project {project}]"
+    )
+    return 0
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    """Print a project's planned DAG: each handoff → epic/wave + live Cortex status,
+    grouped by epic then wave."""
+    proj = _project_or_error(args.project)
+    if not proj:
+        return 2
+    db = appdb_store.settings_db
+    rows = db.list_handoff_plan(proj, args.epic)
+    if rows is appdb_store.UNAVAILABLE:
+        sys.stderr.write(
+            "cole-plan: could not read the plan — the app-DB is unavailable "  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+            f"({appdb_store._safe_dsn(db.dsn)}). Is harness-appdb up?\n"
+        )
+        return 1
+
+    if not rows:
+        scope = f" epic {args.epic}" if args.epic else ""
+        print(f"No wave plan recorded for project '{proj}'{scope}. "
+              f"(Every handoff is wave 0 → Phase-1 dispatch-immediately.)")
+        return 0
+
+    statuses = _cortex_status_for(proj)
+    cortex_ok = bool(statuses)
+
+    # Group: epic -> wave -> [(handoff_id, status, complete)].
+    grouped: dict[str, dict[int, list[tuple[str, str, bool]]]] = {}
+    for r in rows:
+        epic = r["epic"] or "(no epic)"
+        wave = int(r["wave"])
+        hid = r["handoff_id"]
+        status = statuses.get(hid, "?" if cortex_ok is False else "pending")
+        if hid not in statuses and cortex_ok:
+            status = "absent"  # planned but no live Cortex handoff with that id
+        complete = status in _TERMINAL_STATUSES
+        grouped.setdefault(epic, {}).setdefault(wave, []).append((hid, status, complete))
+
+    print(f"Wave plan · project {proj}"
+          + (f" · epic {args.epic}" if args.epic else "")
+          + (f"   (Cortex status: {'live' if cortex_ok else 'unreachable → ?'})"))
+    print("=" * 72)
+
+    for epic in sorted(grouped):
+        waves = grouped[epic]
+        # Determine the active wave: lowest wave with an incomplete handoff.
+        active_wave = None
+        for w in sorted(waves):
+            if any(not c for (_h, _s, c) in waves[w]):
+                active_wave = w
+                break
+        epic_done = active_wave is None
+        head = f"epic {epic}"
+        if epic_done:
+            head += "   [ALL WAVES COMPLETE]"
+        else:
+            head += f"   [active wave: {active_wave}]"
+        print(f"\n{head}")
+        for w in sorted(waves):
+            items = waves[w]
+            done_n = sum(1 for (_h, _s, c) in items if c)
+            total = len(items)
+            if epic_done:
+                marker = "done"
+            elif w < (active_wave or 0):
+                marker = "done"
+            elif w == active_wave:
+                marker = "ACTIVE → dispatching"
+            else:
+                marker = "waiting (blocked by earlier waves)"
+            print(f"  wave {w}  [{done_n}/{total} complete]  — {marker}")
+            for (hid, status, complete) in items:
+                tick = "x" if complete else " "
+                print(f"      [{tick}] {hid}   ({status})")
+    print()
+    return 0
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="cole-plan",  # fitness:allow-literal CLI helper name (argparse program name)
+        description="Plan an epic's handoffs into dependency waves for the dispatch loop.",
+    )
+    p.add_argument(
+        "handoff_id",
+        nargs="?",
+        help="Cortex handoff UUID to record (bare uuid or 'uuid:hex'). Omit with --show.",
+    )
+    p.add_argument("--epic", default=None, help="Epic id the handoff belongs to (e.g. E007).")
+    p.add_argument("--wave", type=int, default=0, help="Wave number (0 = dispatch immediately).")
+    p.add_argument(
+        "--project", default=_DEFAULT_PROJECT or None,
+        help="Project key. Required unless CORTEX_CONSOLE_DEFAULT_PROJECT is set.",
+    )
+    p.add_argument(
+        "--show", action="store_true",
+        help="Print the project's planned DAG instead of recording a row.",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.show:
+        return _cmd_show(args)
+    if not args.handoff_id:
+        sys.stderr.write(
+            "cole-plan: nothing to do. Give a <handoff_id> to record, or --show to "  # fitness:allow-literal CLI helper name (program-name prefix in stderr)
+            "print the plan. See `cole-plan --help`.\n"
+        )
+        return 2
+    return _cmd_record(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

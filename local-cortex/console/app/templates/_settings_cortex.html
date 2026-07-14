@@ -1,0 +1,149 @@
+{#
+  SETTINGS · Cortex (R4c, INFORMATIONAL read-out). Mostly display:
+
+    1. Cortex connection — the base URL from the console settings store
+       (defaulting to the schema default), with a pointer to the System tab to
+       change it, plus the URL the live client actually uses + the default
+       project key.
+    2. Live /health — status pill, surface_version, event_backend, rls_enforced.
+    3. The Cortex 6-LAYER architecture — L1 Verbatim … L6 Boot, names +
+       KEEP/NEW/OPTIMIZE status.
+
+  This is the Cortex API service for the current Kaidera OS deployment. Read-only —
+  the connection is edited in System.
+
+  Context:
+    selected_key         : current project key (kept on the System link)
+    cortex_base_url       : base URL from the settings store
+    cortex_client_base_url: the URL the live CortexClient is actually using
+    cortex_default_project: default project key from the store
+    cortex_health         : raw /health dict (status, surface_version,
+                            event_backend, rls_enforced, ...)
+    cortex_layers         : [{id,name,status,what}] L6→L1
+#}
+{% set h = cortex_health or {} %}
+{% set status = (h.status or "unreachable") | lower %}
+<div class="set-inner">
+  <div class="set-page on" id="setpage-cortex">
+    <div class="set-page-h">Cortex</div>
+    <div class="set-page-sub">The Cortex service this console reads. Connection + live health below, plus the <b>6-layer</b> Cortex architecture. The connection URL is edited in the <b>System</b> tab; this tab is read-only.</div>
+
+    {# ---------------- connection card ---------------- #}
+    <section class="cx-card">
+      <header class="cx-card-h">
+        <span class="cx-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>
+        </span>
+        <span class="cx-card-t">Connection</span>
+        <button
+          class="cx-edit"
+          type="button"
+          title="Change the base URL in System"
+          hx-get="/settings/system?project={{ selected_key or '' }}"
+          hx-target="#settings-body"
+          hx-swap="innerHTML"
+          onclick="markSettingsTabById('system')"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+          Edit in System
+        </button>
+      </header>
+      <div class="cx-kv-grid">
+        <div class="cx-kv">
+          <span class="cx-k">Base URL</span>
+          <span class="cx-v"><code>{{ cortex_base_url or "—" }}</code></span>
+        </div>
+        <div class="cx-kv">
+          <span class="cx-k">Active client URL</span>
+          <span class="cx-v"><code>{{ cortex_client_base_url or "—" }}</code></span>
+        </div>
+        <div class="cx-kv">
+          <span class="cx-k">Default project</span>
+          <span class="cx-v"><code>{{ cortex_default_project or "—" }}</code></span>
+        </div>
+      </div>
+      {% if cortex_base_url and cortex_client_base_url and cortex_base_url != cortex_client_base_url %}
+      <div class="cx-note">
+        The stored base URL differs from the URL the running client uses (set via the <code>CORTEX_BASE_URL</code> env var at launch). The stored value applies on next restart.
+      </div>
+      {% endif %}
+    </section>
+
+    {# ---------------- live health card ---------------- #}
+    <section class="cx-card">
+      <header class="cx-card-h">
+        <span class="cx-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l2 6 4-14 2 8h6"/></svg>
+        </span>
+        <span class="cx-card-t">Live health</span>
+        <span class="cx-pill cx-pill--{{ 'ok' if status in ('ok','healthy','up') else ('warn' if status in ('degraded','starting') else 'down') }}">
+          <span class="cx-dot" aria-hidden="true"></span>{{ h.status or "unreachable" }}
+        </span>
+        <button
+          class="cx-refresh"
+          type="button"
+          title="Re-fetch /health"
+          hx-get="/settings/cortex?project={{ selected_key or '' }}"
+          hx-target="#settings-body"
+          hx-swap="innerHTML"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+          Refresh
+        </button>
+      </header>
+      {% if status in ('unreachable',) and h.error %}
+      <div class="cx-note err">Couldn't reach Cortex: <code>{{ h.error }}</code>. Check the base URL in <b>System</b> and that the local Cortex stack is running.</div>
+      {% endif %}
+      <div class="cx-kv-grid">
+        <div class="cx-kv">
+          <span class="cx-k">Surface version</span>
+          <span class="cx-v"><code>{{ h.surface_version or "—" }}</code></span>
+        </div>
+        <div class="cx-kv">
+          <span class="cx-k">Event backend</span>
+          <span class="cx-v"><code>{{ h.event_backend or "—" }}</code></span>
+        </div>
+        <div class="cx-kv">
+          <span class="cx-k">RLS enforced</span>
+          <span class="cx-v">
+            {% if h.rls_enforced is defined and h.rls_enforced is not none %}
+            <span class="cx-bool cx-bool--{{ 'on' if h.rls_enforced else 'off' }}">{{ 'yes' if h.rls_enforced else 'no' }}</span>
+            {% else %}<code>—</code>{% endif %}
+          </span>
+        </div>
+      </div>
+    </section>
+
+    {# ---------------- 6-layer architecture ---------------- #}
+    <section class="cx-card">
+      <header class="cx-card-h">
+        <span class="cx-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 13l10 5 10-5M2 18l10 5 10-5"/></svg>
+        </span>
+        <span class="cx-card-t">6-layer Cortex</span>
+        <span class="cx-card-sub">local-cortex memory architecture</span>
+      </header>
+      <ol class="cx-layers">
+        {% for L in cortex_layers %}
+        <li class="cx-layer">
+          <span class="cx-layer-id">{{ L.id }}</span>
+          <span class="cx-layer-body">
+            <span class="cx-layer-name">{{ L.name }}</span>
+            <span class="cx-layer-what">{{ L.what }}</span>
+          </span>
+          <span class="cx-layer-status cx-layer-status--{{ L.status | lower }}">{{ L.status }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      <div class="cx-layer-legend">
+        <span><span class="cx-chip cx-layer-status--keep">KEEP</span> retained as-is</span>
+        <span><span class="cx-chip cx-layer-status--new">NEW</span> added this design</span>
+        <span><span class="cx-chip cx-layer-status--optimize">OPTIMIZE</span> reworked</span>
+      </div>
+    </section>
+
+    <p class="cx-foot-note">
+      Full local-Cortex design lives at <code>local-cortex/ARCHITECTURE.md</code>. This read-out reflects the dev-team local Cortex; the commercial platform runs a separately deployed Cortex service.
+    </p>
+  </div>
+</div>

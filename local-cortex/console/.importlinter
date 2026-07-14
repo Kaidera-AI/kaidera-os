@@ -1,0 +1,91 @@
+# import-linter contract — the SDK's load-bearing layer rule, as a GATE not a wish.
+#
+# THE ONE LAW (docs/sdk/README.md §"The layer rule"): the domain imports nothing
+# outward. `app/domain/` is the pure functional core (Protocols + DTOs + value
+# logic); it must NOT import the I/O world (httpx / fastapi / starlette /
+# subprocess / psycopg2 / asyncpg) NOR the outer app layers (app.adapters /
+# app.main). Adapters depend on the domain, never the reverse — arrows point
+# inward (ratified design §3, roadmap Track A).
+#
+# This is TRUE NOW: app/domain/ holds only runstate.py + ports.py, which import
+# stdlib only. The Forbidden contract below pins that purity so it can't regress;
+# the fitness gate (scripts/fitness/check-import-linter.sh) runs it on every push.
+# The existing ast-based guard tests (tests/test_ports_purity.py,
+# tests/test_runstate_port.py) check purity at the SOURCE level; this contract
+# checks it at the GRAPH level (it also catches an INDIRECT leak through another
+# app module), and adds the app.adapters / app.main arrows the ast guard can't see.
+#
+# SCOPE = domain-purity ONLY, deliberately. We do NOT add a full Layers contract
+# yet: app/main.py is still the un-carved blob, so a Layers rule (presentation →
+# api → modules → ports → adapters) would be RED today and block pushes. Per the
+# roadmap (Track A: "import-linter enforces the boundaries" as the modules carve),
+# the module-isolation arrows get added incrementally, one per carved module —
+# each addition stays green because the module is independent by the time its
+# arrow lands. See docs/sdk/README.md §5 ("How to extend the SDK") for the recipe.
+#
+# Run it: from local-cortex/console, `.venv/bin/lint-imports --config .importlinter`
+# (the gate does exactly this). External packages are graphed via grimp, so
+# `include_external_packages` is required to forbid httpx/fastapi/etc by name.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:domain-imports-nothing-outward]
+name = Domain core imports nothing outward (the SDK layer rule)
+type = forbidden
+# `app.domain` as a package covers every submodule (runstate.py, ports.py, and
+# any future domain module) — as_packages defaults to True.
+source_modules =
+    app.domain
+# The I/O world + the outer app layers the pure core must never reach for.
+forbidden_modules =
+    httpx
+    fastapi
+    starlette
+    subprocess
+    psycopg2
+    asyncpg
+    app.adapters
+    app.main
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODULE-ISOLATION ARROWS (roadmap Track A — added as the modules carve)
+# ─────────────────────────────────────────────────────────────────────────────
+# As each feature module is carved out of main.py behind the ports, it is added
+# to this INDEPENDENCE contract so the vertical modules can't import each other
+# (they coordinate only through the ports/domain) — a NEW section, NOT a widening
+# of the Forbidden rule above. The first carve is `app.analytics` (usage/cost
+# analytics behind OperationalStorePort); the contract stays green because the
+# module is independent by construction (its service depends only on the domain
+# port, and only its api.py touches fastapi). The second carve is `app.agents` (the
+# roster catalog behind OperationalStorePort) — independent the same way. The third
+# is `app.settings_module` (operational settings behind OperationalStorePort), the
+# fourth `app.dispatch` (the dispatch BOARD behind CortexMemoryPort +
+# OperationalStorePort — the read/board side; the orchestrator's spawn/run imperative
+# core stays in main.py/orchestrator.py for a later carve), and the FIFTH + FINAL
+# `app.runs` (the run-state READ side behind RunStatePort — the agent run rail +
+# transcript view-model + the run board/single-run reads; the SSE writer side + the
+# orchestrator's spawn/run imperative core stay in main.py).
+#
+# With `app.runs` appended below, Track A's FIVE feature modules are all carved behind
+# ports — the module-isolation independence contract is complete. The full Layers
+# contract (presentation → api → modules → ports → adapters) is the follow-up: it lands
+# LAST, once main.py is fully dissolved (it would be RED today while main.py is still the
+# un-carved blob).
+#
+# NOTE: the settings module's package is `app.settings_module`, NOT `app.settings`,
+# because `app/settings.py` (the file-backed store the HTML routes still use) already
+# exists — a package `app/settings/` can't coexist with that module file. The carve
+# is the same shape (service.py port-only + api.py the only fastapi importer); the
+# package name keeps it strictly additive.
+
+[importlinter:contract:modules-are-independent]
+name = Feature modules don't import each other (only ports + domain)
+type = independence
+modules =
+    app.analytics
+    app.agents
+    app.settings_module
+    app.dispatch
+    app.runs

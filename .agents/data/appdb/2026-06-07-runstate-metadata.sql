@@ -1,0 +1,40 @@
+-- Kaidera OS App-DB migration (2026-06-07) — RUN_STATE METADATA (JSONB sidecar).
+-- Visual "Explain" capability (console host-side generation + L5 persistence).
+--
+-- WHAT + WHY: an "Explain" run is a RunState row (lease_owner='explain') that drives
+-- an LLM to produce a self-contained HTML explainer, then persists it as a Cortex L5
+-- artifact via `POST /artifacts`. The persisted artifact's id must travel back to the
+-- SPA (the ExplainView reads the run, then fetches the artifact to render it in a
+-- sandboxed iframe). This migration adds the ONE column that carries that linkage —
+-- and any future small per-run sidecar fact — without a second table:
+--
+--   run_state.metadata — a JSONB bag the writer stamps on terminal success, e.g.
+--     {"artifact_id": "<uuid>"} so a reader can jump from the run to the artifact.
+--     NULL for every run that has no sidecar (autonomous runs, chat turns, a failed
+--     explain run) — the safe default that preserves today's behaviour byte-for-byte.
+--
+-- ADDITIVE + BACKWARD-COMPATIBLE: the column is NULLABLE with no default. Every
+-- existing writer (orchestrator, worker, chat) passes no metadata → NULL → identical
+-- to today. Only the explain run (and any future opt-in writer) stamps it.
+--
+-- Container: harness-appdb (postgres:17-alpine) on host port 5500, DB harness_app.
+-- This is NOT cortex-pg and NOT the Kaidera AI platform DB. Local machine only.
+--
+-- Apply: the harness-appdb-migrate one-shot applies every .agents/data/appdb/*.sql in
+-- lexical order, idempotently, on deploy (this sorts AFTER 2026-06-05-runstate.sql, so
+-- run_state already exists). Manual re-apply is safe too:
+--   docker exec -i harness-appdb psql -U harness -d harness_app \
+--     < .agents/data/appdb/2026-06-07-runstate-metadata.sql
+--
+-- Idempotent: ALTER TABLE ... ADD COLUMN IF NOT EXISTS — safe to re-run; a no-op once
+-- converged.
+
+-- ---------------------------------------------------------------------------
+--  run_state.metadata — a JSONB sidecar for small per-run facts.
+--
+--  JSONB (not a typed column) so a writer can stamp an open-ended bag without a new
+--  migration per fact; the explain run stamps {"artifact_id": "<uuid>"}. NULL for
+--  every run with no sidecar (the safe default = today's behaviour). No index: the
+--  column is read by run_id (already the PK), never queried by its contents.
+-- ---------------------------------------------------------------------------
+ALTER TABLE run_state ADD COLUMN IF NOT EXISTS metadata JSONB;

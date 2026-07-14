@@ -1,0 +1,186 @@
+{#
+  Project detail panel partial. Rendered inline by dashboard.html and swapped
+  in by GET /projects/{key}. Carries data-selected-key on its root so the
+  sidebar can re-sync the active highlight after a swap.
+
+  Live refresh:
+    - Explicit "Refresh" button (hx-get this same partial).
+    - hx-trigger="every 10s" poll on the root, as the live-feed fallback.
+  TODO(SSE): once the GET /events SSE bridge lands, replace the every-10s poll
+  here with an EventSource subscription (push roster/handoff deltas) and keep
+  the manual Refresh button as a fallback.
+#}
+{% if selected %}
+{#
+  Sort handoffs: priority-major (urgent → high → medium → low → unknown),
+  newest-first within each priority. Jinja's `sort` only orders by raw
+  attribute value (priority strings would sort alphabetically), so instead we
+  sort newest-first once, then partition into explicit priority tiers and
+  concatenate them in rank order. The date sort is stable, so newest-first is
+  preserved within each tier.
+#}
+{% set prio_order = ["urgent", "high", "medium", "low"] %}
+{% set handoffs_by_date = handoffs | sort(attribute="created_at", reverse=True) | list %}
+{% set ns = namespace(sorted=[]) %}
+{% for tier in prio_order %}
+  {% set ns.sorted = ns.sorted + (handoffs_by_date | selectattr("priority", "equalto", tier) | list) %}
+{% endfor %}
+{# any handoff with an unexpected/missing priority falls to the end #}
+{% set ns.sorted = ns.sorted + (handoffs_by_date | rejectattr("priority", "in", prio_order) | list) %}
+{% set handoffs_sorted = ns.sorted %}
+{#
+  Tasks: in-progress / active first (so live work sits at the top), other
+  statuses after. Partition into the two groups, preserving API order within
+  each, then concatenate (active group first).
+#}
+{% set active_first = ["in_progress", "active"] %}
+{% set tasks_active = tasks | selectattr("status", "in", active_first) | list %}
+{% set tasks_rest = tasks | rejectattr("status", "in", active_first) | list %}
+{% set tasks_sorted = tasks_active + tasks_rest %}
+{#
+  Test/pollution-pattern hint substrings. A name carrying one of these is
+  flagged with a dim `test?` tag — a hint to the polluted/synthetic agents,
+  NOT authority. Trailing-suffix checks (-test) handled separately below.
+#}
+{% set test_marks = ["-ddl-", "-state-", "-poc-", "-smoke", "-init-"] %}
+<div
+  class="panel-inner"
+  data-selected-key="{{ selected_key }}"
+  hx-get="/projects/{{ selected_key }}"
+  hx-trigger="every 10s"
+  hx-target="#project-panel"
+  hx-swap="innerHTML"
+>
+  <div class="panel-head">
+    <div class="panel-titlewrap">
+      <h1 class="panel-title">{{ selected.display_name or selected.project_key }}</h1>
+      <div class="panel-sub">
+        <span class="repo" title="{{ selected.repo_root }}">{{ selected.repo_root }}</span>
+      </div>
+    </div>
+    {#
+      Manual refresh. Targets the outer #project-panel (not panel-inner) so the
+      whole partial — including this button — is replaced cleanly.
+    #}
+    <button
+      type="button"
+      class="refresh-btn"
+      hx-get="/projects/{{ selected_key }}"
+      hx-target="#project-panel"
+      hx-swap="innerHTML"
+      title="Refresh vitals, tasks, roster + handoffs now"
+    >
+      ↻ Refresh
+    </button>
+  </div>
+
+  {# ---------- Vitals strip ---------- #}
+  {% set summary = state.get("summary", {}) %}
+  <div class="vitals" aria-label="Project vitals">
+    <div class="vital">
+      <span class="vital-num">{{ summary.active_tasks if summary.active_tasks is not none else "—" }}</span>
+      <span class="vital-label">Active tasks</span>
+    </div>
+    <div class="vital">
+      <span class="vital-num">{{ summary.pending_handoffs if summary.pending_handoffs is not none else "—" }}</span>
+      <span class="vital-label">Pending handoffs</span>
+    </div>
+    <div class="vital">
+      <span class="vital-num">{{ summary.events_24h if summary.events_24h is not none else "—" }}</span>
+      <span class="vital-label">Events · 24h</span>
+    </div>
+    <div class="vital">
+      <span class="vital-num">{{ roster | length }}</span>
+      <span class="vital-label">Agents</span>
+    </div>
+  </div>
+
+  <div class="panel-grid">
+    {# ---------- Roster ---------- #}
+    <div class="card">
+      <div class="card-head">
+        <h3 class="card-title">Roster</h3>
+        <span class="card-count">{{ roster | length }}</span>
+      </div>
+      {% if roster %}
+      <ul class="roster">
+        {% for a in roster %}
+        {% set nm = a.name or "" %}
+        {% set is_test = (nm.endswith("-test")) or (test_marks | select("in", nm) | list | length > 0) %}
+        <li class="roster-row">
+          <span class="agent-name">
+            {{ a.name }}{% if is_test %}<span class="test-tag" title="name matches a test/pollution pattern (hint, not authority)">test?</span>{% endif %}
+          </span>
+          <span class="agent-role">{{ a.role }}</span>
+          <span class="agent-model {{ 'is-unset' if not a.model else '' }}">{{ a.model or "—" }}</span>
+          <span class="agent-scope">{{ a.writer_scope or "—" }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">No agents in this project's roster.</p>
+      {% endif %}
+    </div>
+
+    {# ---------- Tasks ---------- #}
+    <div class="card">
+      <div class="card-head">
+        <h3 class="card-title">Tasks</h3>
+        <span class="card-count">{{ tasks | length }}</span>
+      </div>
+      {% if tasks_sorted %}
+      <ul class="tasks">
+        {% for t in tasks_sorted %}
+        <li class="task-row">
+          <span class="task-title" title="{{ t.title }}">{{ t.title }}</span>
+          <span class="task-agent">{{ t.assigned_agent or "—" }}</span>
+          <span class="badge status-{{ t.status }}">{{ t.status }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">No active tasks.</p>
+      {% endif %}
+    </div>
+
+    {# ---------- Handoffs ---------- #}
+    <div class="card">
+      <div class="card-head">
+        <h3 class="card-title">Handoffs</h3>
+        <span class="card-count">{{ handoffs | length }}</span>
+      </div>
+      {% if handoffs_sorted %}
+      <ul class="handoffs">
+        {% for h in handoffs_sorted %}
+        <li class="handoff-row">
+          <div class="handoff-line">
+            <span class="badge prio-{{ h.priority }}">{{ h.priority }}</span>
+            <span class="badge status-{{ h.status }}">{{ h.status }}</span>
+            <span class="handoff-summary">{{ h.summary }}</span>
+          </div>
+          <div class="handoff-meta">
+            <span class="from">from <strong>{{ h.from_agent }}</strong></span>
+            {% if h.to_agent %}
+            <span class="dot-sep" aria-hidden="true">·</span>
+            <span class="to">to {{ h.to_agent }}</span>
+            {% elif h.to_role %}
+            <span class="dot-sep" aria-hidden="true">·</span>
+            <span class="to">to {{ h.to_role }}</span>
+            {% endif %}
+            <span class="dot-sep" aria-hidden="true">·</span>
+            <span class="when">{{ h.created_at }}</span>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">No handoffs for this project.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="panel-inner" data-selected-key="">
+  <p class="empty">Select a project to view its vitals, tasks, roster, and handoffs.</p>
+</div>
+{% endif %}

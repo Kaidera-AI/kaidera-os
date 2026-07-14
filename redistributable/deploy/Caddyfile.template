@@ -1,0 +1,43 @@
+# Kaidera OS console — generic public reverse-proxy template (project-agnostic).
+#
+# Stands a TLS terminator in front of the NATIVE console (uvicorn on 127.0.0.1:8765) so the
+# app is reachable publicly over HTTPS out-of-the-box. This replaces the old portal-coupled
+# Caddyfile (deleted with local-cortex/portal/ in v0.1.119) — it carries NO project/turnkey
+# content and proxies the WHOLE console (one origin), not a separate chat-shell port.
+#
+# RENDERED + INSTALLED by install.sh when KAIDERA_PUBLIC_HOST is set (see install.sh "Public
+# reverse proxy" step). install.sh substitutes the host AND the whole `tls` line for concrete
+# values, then `caddy validate`s the result BEFORE overwriting /etc/caddy/Caddyfile (it never
+# installs an unparseable config). To use it by hand instead:
+#   KAIDERA_PUBLIC_HOST=app.example.com  (export it, or replace the placeholder below)
+#   sudo cp Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# TLS — install.sh picks the right `tls` line from the environment (the `__KAIDERA_TLS_LINE__`
+# marker below is replaced wholesale), in this precedence:
+#   1. KAIDERA_TLS_CERT=/path/cert.pem KAIDERA_TLS_KEY=/path/key.pem  → `tls <cert> <key>`
+#        Use this behind Cloudflare Full(strict) with an origin cert (e.g.
+#        /etc/caddy/origin.crt + .key) — Caddy serves YOUR cert, no ACME.
+#   2. KAIDERA_TLS_EMAIL=you@example.com                              → `tls you@example.com`
+#        Auto-HTTPS via Let's Encrypt for the host above (needs public :80 + :443 reaching here).
+#   3. neither set (the DEFAULT)                                     → `tls internal`
+#        Caddy serves a self-signed cert. Correct behind Cloudflare/another terminator that does
+#        public TLS itself (pair with Cloudflare "Full"). A bare `tls` is INVALID and is never
+#        emitted. By hand, just write one of the three forms in place of `__KAIDERA_TLS_LINE__`.
+#
+# The console is run with `uvicorn --proxy-headers` by install.sh, so it honors the
+# X-Forwarded-* headers Caddy sets and emits correct public-origin login links/redirects.
+# Also set KAIDERA_PUBLIC_BASE_URL=https://{$KAIDERA_PUBLIC_HOST} on the console (install.sh
+# does this for you) so magic-links/WebAuthn use the public origin, not 127.0.0.1.
+
+{$KAIDERA_PUBLIC_HOST} {
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:8765 {
+		# Disable response buffering so SSE / streamed chat flushes straight through.
+		flush_interval -1
+	}
+
+	# TLS line — install.sh replaces this whole line (see the TLS note above). Default is
+	# `tls internal`; set KAIDERA_TLS_CERT/KEY for an origin cert, or KAIDERA_TLS_EMAIL for ACME.
+	__KAIDERA_TLS_LINE__
+}

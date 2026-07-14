@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""Validate and install Kaidera OS project packs."""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import importlib.util
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+VALIDATOR_PATH = SCRIPT_DIR / "validate-cortex-project-pack.py"
+REPO_ROOT = SCRIPT_DIR.parents[1]
+CONSOLE_ROOT = REPO_ROOT / "local-cortex" / "console"
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def load_validator():
+    spec = importlib.util.spec_from_file_location("validate_cortex_project_pack", VALIDATOR_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load project-pack validator: {VALIDATOR_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def resolve_manifest(path: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_dir():
+        candidate = candidate / "project-pack.json"
+    return candidate.resolve()
+
+
+def pack_install_plan(config: dict[str, Any], manifest: Path, target: Path) -> list[tuple[Path, Path]]:
+    pack_key = config["pack"]["key"]
+    dest_root = target / ".kaidera-os" / "project-packs" / pack_key
+    plan: list[tuple[Path, Path]] = [(manifest, dest_root / "project-pack.json")]
+    for asset in config.get("assets") or []:
+        asset_path = manifest.parent / asset["path"]
+        if asset_path.exists():
+            plan.append((asset_path, dest_root / asset["path"]))
+    return plan
+
+
+def copy_path(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
+
+
+def write_extensions_env(config: dict[str, Any], target: Path) -> Path | None:
+    modules = [
+        item["module"]
+        for item in config.get("extensions") or []
+        if isinstance(item, dict) and item.get("module")
+    ]
+    if not modules:
+        return None
+    pack_key = config["pack"]["key"]
+    pack_root = target / ".kaidera-os" / "project-packs" / pack_key
+    dest = pack_root / "extensions.env"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    env_name = (config.get("install") or {}).get("enable_extensions_env") or "KAIDERA_OS_EXTENSION_MODULES"
+    dest.write_text(
+        "# Source/copy both values into the console service environment, then restart.\n"
+        f"{env_name}={','.join(modules)}\n"
+        f"KAIDERA_OS_EXTENSION_PATHS={shlex.quote(str(pack_root.resolve()))}\n",
+        encoding="utf-8",
+    )
+    return dest
+
+
+def installed_pack_root(config: dict[str, Any], target: Path) -> Path:
+    return target / ".kaidera-os" / "project-packs" / config["pack"]["key"]
+
+
+def select_portal(config: dict[str, Any], key: str | None) -> dict[str, Any] | None:
+    portals = [portal for portal in config.get("portals") or [] if isinstance(portal, dict)]
+    if not portals:
+        return None
+    if key is None:
+        return portals[0] if len(portals) == 1 else None
+    for portal in portals:
+        if portal.get("key") == key:
+            return portal
+    return None
+
+
+def discover_pack_manifests(path: str) -> list[Path]:
+    """Find pack manifests in a pack dir or external checkout root."""
+    root = Path(path).expanduser().resolve()
+    if root.is_file():
+        return [root] if root.name == "project-pack.json" else []
+    direct = root / "project-pack.json"
+    if direct.is_file():
+        return [direct]
+    manifests: list[Path] = []
+    for candidate in root.rglob("project-pack.json"):
+        if any(part.startswith(".") for part in candidate.relative_to(root).parts):
+            continue
+        manifests.append(candidate)
+    return sorted(manifests)
+
+
+def infer_portal_context(portal: dict[str, Any], pack_root: Path) -> Path | None:
+    declared = portal.get("docker_context")
+    if isinstance(declared, str) and declared.strip():
+        return (pack_root / declared).resolve()
+
+    frontend = portal.get("frontend_path")
+    if not isinstance(frontend, str) or not frontend.strip():
+        return None
+    rel = Path(frontend)
+    current = rel if (pack_root / rel).is_dir() else rel.parent
+    while True:
+        candidate = (pack_root / current).resolve()
+        if (candidate / "Dockerfile").is_file():
+            return candidate
+        if current == Path(".") or str(current) in ("", "."):
+            break
+        current = current.parent
+    return None
+
+
+def required_asset_paths(config: dict[str, Any]) -> list[Path]:
+    paths: list[Path] = [Path("project-pack.json")]
+    for asset in config.get("assets") or []:
+        if isinstance(asset, dict) and asset.get("required", True) is not False:
+            value = asset.get("path")
+            if isinstance(value, str) and value.strip():
+                paths.append(Path(value))
+    return paths
+
+
+def extension_module_names(config: dict[str, Any]) -> list[str]:
+    modules: list[str] = []
+    for extension in config.get("extensions") or []:
+        if isinstance(extension, dict) and isinstance(extension.get("module"), str):
+            modules.append(extension["module"])
+    return modules
+
+
+def import_extension_from_pack(module_name: str, pack_root: Path) -> Any:
+    """Import an installed extension module exactly as the console loader will."""
+    for path in (str(pack_root.resolve()), str(CONSOLE_ROOT.resolve())):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    parts = module_name.split(".")
+    for index in range(1, len(parts) + 1):
+        sys.modules.pop(".".join(parts[:index]), None)
+    return importlib.import_module(module_name)
+
+
+def extension_route_paths(module: Any) -> list[str]:
+    router = getattr(module, "router", None)
+    routes = getattr(router, "routes", None)
+    if not isinstance(routes, list):
+        return []
+    paths: list[str] = []
+    for route in routes:
+        path = getattr(route, "path", None)
+        if isinstance(path, str):
+            paths.append(path)
+    return paths
+
+
+def smoke_manifest(
+    manifest: Path,
+    target: Path,
+    *,
+    validator: Any,
+    require_portal_context: bool = True,
+) -> tuple[bool, list[str]]:
+    """Install a pack into a clean target and verify extension/portal readiness."""
+    messages: list[str] = []
+    config = validator.load_json(manifest)
+    if not isinstance(config, dict):
+        return False, [f"{manifest}: project pack root must be an object"]
+    errors = validator.validate_manifest(config, manifest.parent)
+    if errors:
+        return False, [f"{manifest}: {error}" for error in errors]
+
+    pack_key = config["pack"]["key"]
+    pack_root = installed_pack_root(config, target)
+    messages.append(f"{pack_key}: validated")
+    for src, dest in pack_install_plan(config, manifest, target):
+        copy_path(src, dest)
+    write_extensions_env(config, target)
+    messages.append(f"{pack_key}: installed -> {pack_root}")
+
+    missing = [str(path) for path in required_asset_paths(config) if not (pack_root / path).exists()]
+    if missing:
+        return False, [*messages, f"{pack_key}: missing installed assets: {', '.join(missing)}"]
+    messages.append(f"{pack_key}: required assets present")
+
+    for module_name in extension_module_names(config):
+        try:
+            module = import_extension_from_pack(module_name, pack_root)
+        except Exception as exc:
+            return False, [*messages, f"{pack_key}: extension import failed: {module_name}: {exc}"]
+        routes = extension_route_paths(module)
+        hook = callable(getattr(module, "registered_agent_routing_override", None))
+        if not routes and not hook:
+            messages.append(f"{pack_key}: extension imported: {module_name} (no router/hook)")
+        else:
+            bits = []
+            if routes:
+                bits.append(f"{len(routes)} route(s)")
+            if hook:
+                bits.append("routing hook")
+            messages.append(f"{pack_key}: extension imported: {module_name} ({', '.join(bits)})")
+
+    portals = [portal for portal in config.get("portals") or [] if isinstance(portal, dict)]
+    for portal in portals:
+        key = str(portal.get("key") or "(unknown)")
+        frontend = portal.get("frontend_path")
+        if isinstance(frontend, str) and frontend.strip() and not (pack_root / frontend).exists():
+            return False, [*messages, f"{pack_key}: portal {key} frontend missing: {frontend}"]
+        context = infer_portal_context(portal, pack_root)
+        if context is None:
+            if require_portal_context and portal.get("required", False):
+                return False, [*messages, f"{pack_key}: portal {key} Docker context missing"]
+            messages.append(f"{pack_key}: portal ready: {key} (metadata/frontend)")
+            continue
+        if not is_within(context, pack_root):
+            return False, [*messages, f"{pack_key}: portal {key} Docker context escapes pack root"]
+        if not (context / "Dockerfile").is_file():
+            return False, [*messages, f"{pack_key}: portal {key} Dockerfile missing in {context}"]
+        messages.append(f"{pack_key}: portal ready: {key} ({context.relative_to(pack_root)})")
+
+    return True, messages
+
+
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def parse_env(items: list[str]) -> list[tuple[str, str]]:
+    parsed: list[tuple[str, str]] = []
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"env value must be KEY=VALUE: {item}")
+        key, value = item.split("=", 1)
+        if not ENV_KEY_RE.match(key):
+            raise ValueError(f"env key must be shell-safe: {key}")
+        parsed.append((key, value))
+    return parsed
+
+
+def print_command(argv: list[str]) -> None:
+    print(f"  $ {shlex.join(argv)}")
+
+
+def run_command(argv: list[str], *, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess[str]:
+    stream = subprocess.DEVNULL if quiet else None
+    return subprocess.run(argv, text=True, stdout=stream, stderr=stream, check=check)
+
+
+def install(args: argparse.Namespace) -> int:
+    validator = load_validator()
+    manifest = resolve_manifest(args.pack)
+    config = validator.load_json(manifest)
+    if not isinstance(config, dict):
+        print("ERROR: project pack root must be an object", file=sys.stderr)
+        return 1
+    errors = validator.validate_manifest(config, manifest.parent)
+    if errors:
+        print("ERROR: invalid project pack:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
+
+    target = Path(args.target).expanduser().resolve()
+    plan = pack_install_plan(config, manifest, target)
+    mode = "apply" if args.apply else "dry-run"
+    print(f"Project pack {mode}: {config['pack']['key']} -> {target}")
+    for src, dest in plan:
+        print(f"  {src.relative_to(manifest.parent)} -> {dest}")
+
+    if not args.apply:
+        print("No files written. Re-run with --apply to install.")
+        return 0
+
+    for src, dest in plan:
+        copy_path(src, dest)
+    extensions_env = write_extensions_env(config, target)
+    if extensions_env is not None:
+        print(f"  wrote extension env: {extensions_env}")
+    print("Project pack installed.")
+    return 0
+
+
+def portal_update(args: argparse.Namespace) -> int:
+    validator = load_validator()
+    manifest = resolve_manifest(args.pack)
+    config = validator.load_json(manifest)
+    if not isinstance(config, dict):
+        print("ERROR: project pack root must be an object", file=sys.stderr)
+        return 1
+    errors = validator.validate_manifest(config, manifest.parent)
+    if errors:
+        print("ERROR: invalid project pack:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
+
+    portal = select_portal(config, args.portal)
+    if portal is None:
+        portals = [item.get("key") for item in config.get("portals") or [] if isinstance(item, dict)]
+        if portals and args.portal is None:
+            print("ERROR: multiple portals declared; pass --portal.", file=sys.stderr)
+        else:
+            print(f"ERROR: portal not found: {args.portal or '(none declared)'}", file=sys.stderr)
+        return 1
+
+    target = Path(args.target).expanduser().resolve()
+    pack_root = installed_pack_root(config, target)
+    if not pack_root.is_dir():
+        print(
+            f"ERROR: project pack is not installed at {pack_root}; run 'cortex-project-pack install --apply' first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.context and not validator.safe_relative_path(args.context):
+        print("ERROR: --context must be a safe installed-pack-relative path.", file=sys.stderr)
+        return 1
+    context = (pack_root / args.context).resolve() if args.context else infer_portal_context(portal, pack_root)
+    if context is None or not context.is_dir():
+        print("ERROR: portal Docker context not found; set portals[].docker_context or pass --context.", file=sys.stderr)
+        return 1
+    if not is_within(context, pack_root):
+        print("ERROR: portal Docker context must stay inside the installed project pack.", file=sys.stderr)
+        return 1
+    if not (context / "Dockerfile").is_file():
+        print(f"ERROR: portal Dockerfile not found in {context}", file=sys.stderr)
+        return 1
+
+    try:
+        extra_env = parse_env(args.env or [])
+        upstream_key = args.upstream_env
+        if upstream_key and not ENV_KEY_RE.match(upstream_key):
+            raise ValueError(f"upstream env key must be shell-safe: {upstream_key}")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    portal_key = str(portal["key"])
+    container = args.container or f"{config['pack']['key']}-{portal_key}"
+    image = args.image or f"{container}:local"
+    build_cmd = ["docker", "build", "-t", image, str(context)]
+    rm_cmd = ["docker", "rm", "-f", container]
+    run_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container,
+        "--restart",
+        args.restart,
+    ]
+    for host in args.add_host or []:
+        run_cmd.extend(["--add-host", host])
+    env_pairs = extra_env
+    if args.upstream_url and upstream_key:
+        env_pairs = [(upstream_key, args.upstream_url), *env_pairs]
+    for key, value in env_pairs:
+        run_cmd.extend(["-e", f"{key}={value}"])
+    run_cmd.extend(["-p", f"{args.host_port}:{args.container_port}", image])
+
+    mode = "apply" if args.apply else "dry-run"
+    print(f"Project pack portal {mode}: {config['pack']['key']}/{portal_key} -> {container}")
+    print(f"  context: {context}")
+    print_command(build_cmd)
+    print_command(rm_cmd)
+    print_command(run_cmd)
+    if not args.apply:
+        print("No portal container changed. Re-run with --apply to build and recreate it.")
+        return 0
+
+    run_command(build_cmd)
+    run_command(rm_cmd, check=False, quiet=True)
+    run_command(run_cmd)
+    print("Portal container updated.")
+    return 0
+
+
+def smoke(args: argparse.Namespace) -> int:
+    validator = load_validator()
+    manifests = discover_pack_manifests(args.source)
+    if not manifests:
+        print(f"ERROR: no project-pack.json manifests found under {args.source}", file=sys.stderr)
+        return 1
+
+    owned_target: Path | None = None
+    if args.target:
+        target = Path(args.target).expanduser().resolve()
+        target.mkdir(parents=True, exist_ok=True)
+    else:
+        owned_target = Path(tempfile.mkdtemp(prefix="kaidera-os-pack-smoke-")).resolve()
+        target = owned_target
+
+    try:
+        failed = False
+        print(f"Project pack smoke: {len(manifests)} pack(s) -> {target}")
+        for manifest in manifests:
+            ok, messages = smoke_manifest(
+                manifest,
+                target,
+                validator=validator,
+                require_portal_context=not args.allow_metadata_only_portals,
+            )
+            for message in messages:
+                print(f"  {message}")
+            if not ok:
+                failed = True
+        if failed:
+            print("Project pack smoke failed.", file=sys.stderr)
+            return 1
+        print("Project pack smoke passed.")
+        return 0
+    finally:
+        if owned_target is not None:
+            if args.keep_target:
+                print(f"Smoke target kept: {target}")
+            else:
+                shutil.rmtree(owned_target, ignore_errors=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate and install Kaidera OS project packs.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    install_parser = sub.add_parser("install", help="Validate and copy a project pack into a target project root.")
+    install_parser.add_argument("pack", help="Path to project-pack.json or a directory containing it.")
+    install_parser.add_argument("--target", required=True, help="Project root where the pack should be installed.")
+    install_parser.add_argument("--apply", action="store_true", help="Actually copy files. Default is dry-run.")
+    install_parser.set_defaults(func=install)
+
+    portal_parser = sub.add_parser("portal", help="Manage package-owned portal containers.")
+    portal_sub = portal_parser.add_subparsers(dest="portal_command", required=True)
+    update_parser = portal_sub.add_parser("update", help="Build and recreate a declared thin-web portal container.")
+    update_parser.add_argument("pack", help="Path to project-pack.json or a directory containing it.")
+    update_parser.add_argument("--target", required=True, help="Project root where the pack is installed.")
+    update_parser.add_argument("--portal", help="Portal key. Required when the pack declares multiple portals.")
+    update_parser.add_argument("--context", help="Installed-pack-relative Docker context override.")
+    update_parser.add_argument("--container", help="Container name. Default: <pack-key>-<portal-key>.")
+    update_parser.add_argument("--image", help="Docker image tag. Default: <container>:local.")
+    update_parser.add_argument("--host-port", type=int, default=8080, help="Host port to publish. Default: 8080.")
+    update_parser.add_argument("--container-port", type=int, default=8080, help="Container port. Default: 8080.")
+    update_parser.add_argument("--upstream-url", default="http://host.docker.internal:8765", help="Kaidera OS upstream URL passed to the portal.")
+    update_parser.add_argument("--upstream-env", default="KAIDERA_OS_BASE_URL", help="Environment variable name for --upstream-url.")
+    update_parser.add_argument("--env", action="append", default=[], help="Additional KEY=VALUE environment variable. Repeatable.")
+    update_parser.add_argument(
+        "--add-host",
+        action="append",
+        default=["host.docker.internal:host-gateway"],
+        help="Docker --add-host entry. Repeatable.",
+    )
+    update_parser.add_argument("--restart", default="unless-stopped", help="Docker restart policy. Default: unless-stopped.")
+    update_parser.add_argument("--apply", action="store_true", help="Actually build/recreate the portal container. Default is dry-run.")
+    update_parser.set_defaults(func=portal_update)
+
+    smoke_parser = sub.add_parser(
+        "smoke",
+        help="Validate and install project packs from a pack directory or external checkout, then verify extension and portal readiness.",
+    )
+    smoke_parser.add_argument("source", help="Project-pack path, pack directory, or external checkout root containing packs.")
+    smoke_parser.add_argument("--target", help="Clean project root to install into. Default: temporary directory.")
+    smoke_parser.add_argument("--keep-target", action="store_true", help="Keep the generated temporary target for inspection.")
+    smoke_parser.add_argument(
+        "--allow-metadata-only-portals",
+        action="store_true",
+        help="Do not require required portals to have a Docker context. Frontend assets are still checked.",
+    )
+    smoke_parser.set_defaults(func=smoke)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

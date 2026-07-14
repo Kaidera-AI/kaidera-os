@@ -1,0 +1,16 @@
+{#
+  Health pill partial. Rendered both inline (base.html include) and by the
+  GET /health-pill HTMX poll. `health` is the raw /health dict, or a synthetic
+  {"status": "unreachable", ...} shape when the API can't be reached.
+#}
+{% set ok = health.get("status") == "healthy" %}
+<span class="health-pill {{ 'is-ok' if ok else 'is-down' }}"
+      title="{{ health.get('surface_version') or health.get('error') or 'no surface version' }}">
+  <span class="health-dot" aria-hidden="true"></span>
+  <span class="health-status">{{ health.get("status", "unknown") }}</span>
+  {% if health.get("surface_version") %}
+  <span class="health-sep" aria-hidden="true">·</span>
+  {# Cortex SURFACE version — global, not the selected project. #}
+  <span class="health-surface" title="Cortex surface version (global — not the selected project)">Cortex {{ health.get("surface_version") | replace("kaidera-os-", "") }}</span>
+  {% endif %}
+</span>

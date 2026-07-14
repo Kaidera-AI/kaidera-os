@@ -1,0 +1,71 @@
+{
+  "drift_violations": [],
+  "external_base_images": [
+    {
+      "image": "pgvector/pgvector:pg16",
+      "service": "cortex-pg"
+    },
+    {
+      "image": "postgres:17-alpine",
+      "service": "harness-appdb"
+    },
+    {
+      "image": "postgres:17-alpine",
+      "service": "harness-appdb-migrate"
+    }
+  ],
+  "kaidera_os_units": [
+    {
+      "build_context": "local-cortex/console",
+      "service": "console",
+      "version": "0.1.231"
+    },
+    {
+      "build_context": ".agents/api",
+      "service": "cortex-api"
+    },
+    {
+      "build_context": "local-cortex/containers/audio-worker",
+      "service": "cortex-audio-worker"
+    },
+    {
+      "build_context": "local-cortex/containers/cli",
+      "service": "cortex-cli"
+    },
+    {
+      "build_context": "local-cortex/containers/embed-worker",
+      "service": "cortex-embed-worker"
+    },
+    {
+      "build_context": "local-cortex/containers/graph-worker",
+      "service": "cortex-graph-worker"
+    },
+    {
+      "build_context": "local-cortex/containers/pdf-worker",
+      "service": "cortex-pdf-worker"
+    },
+    {
+      "build_context": "local-cortex/containers/vision-worker",
+      "service": "cortex-vision-worker"
+    }
+  ],
+  "migrations": [
+    {
+      "count": 56,
+      "dir": ".agents/data/migrations",
+      "set": "cortex-api"
+    },
+    {
+      "count": 12,
+      "dir": ".agents/data/appdb",
+      "set": "app-db"
+    }
+  ],
+  "note": "Every kaidera_os_unit builds from ONE source tree (git archive HEAD), so promoting this release_version ships them together at the same commit. The release commit is the git tag v<release_version>. Regenerate with scripts/release/gen-release-manifest.py after any version/unit/migration change.",
+  "product": "Kaidera OS",
+  "release_version": "0.1.231",
+  "verify": {
+    "all_kaidera_os_units_build_from_source": true,
+    "external_images_are_bases_only": true
+  }
+}

@@ -1,0 +1,25 @@
+{#
+  EDITOR SAVE RESULT — confirmation / error banner (R5b).
+
+  Returned by POST /workspace/{key}/file and swapped into the editor footer's
+  #ws-editor-status slot. Two states:
+    - saved   → a green "Saved · N bytes" confirmation
+    - ws_error → a red error (e.g. a 403 path-escape rejection — NOTHING written)
+
+  Vars:
+    saved     : workspace.write_file() dict (rel_path/name/size/lines), or None
+    ws_error  : error message when the write was rejected/failed
+    ws_status : HTTP-ish status code
+    ws_path   : the rel-path that was POSTed (for the error line)
+#}
+{% if ws_error %}
+  <span class="ed-result ed-result--err" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+    <span><b>{{ ws_status }}</b> — {{ ws_error }}</span>
+  </span>
+{% else %}
+  <span class="ed-result ed-result--ok" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+    <span>Saved <b>{{ saved.name }}</b> · {{ saved.size }} B · {{ saved.lines }} line{{ '' if saved.lines == 1 else 's' }}</span>
+  </span>
+{% endif %}

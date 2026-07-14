@@ -1,0 +1,24 @@
+# Kaidera OS Console - PACKAGING / BUILD deps (R6/E011).
+#
+# These are needed ONLY to build native macOS `.app` artifacts:
+# - E011 menu-bar operator: operator_menubar.py + operator.spec
+# - legacy pywebview window: bootstrap.py + console.spec
+# The dev run (`uvicorn app.main:app`) does NOT need them — see requirements.txt
+# for the runtime/app deps.
+#
+#   pip install -r requirements.txt -r requirements-build.txt
+#
+# pywebview (the native WKWebView window) + its macOS PyObjC backend are listed
+# here too. pywebview is already in requirements.txt (it imports cleanly without
+# the GUI under plain uvicorn), but the pyobjc-framework-* packages are what make
+# the Cocoa/WebKit window actually render — required to RUN the packaged app, so
+# they belong with the build/packaging set.
+# Python 3.14 needs PyInstaller >= 6.15 (earlier releases cap at <3.14).
+pyinstaller>=6.15.0
+
+# macOS native-window backend for pywebview (Cocoa + WKWebView via PyObjC).
+pyobjc-core>=10.0
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-WebKit>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-Security>=10.0

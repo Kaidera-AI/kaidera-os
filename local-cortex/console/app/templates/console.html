@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kaidera OS</title>
+
+  <!-- Favicon: Kaidera mint isometric-cube mark (inlined SVG, from the console-v2 prototype) -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='12 8 44 54'%3E%3Cpath fill='%2358C29F' d='M34.27,10.57l-19.61,11.33v22.65l17.61,10.16v-11.91s-5.52-4.2-5.52-4.2c.06-.23.09-.47.09-.72,0-1.81-1.47-3.28-3.29-3.28s-3.28,1.47-3.28,3.28,1.47,3.29,3.28,3.29c.6,0,1.17-.16,1.65-.45l4.45,3.38v5.42l-11.68-6.74v-18.82l16.3-9.41,16.3,9.41v18.82l-11.67,6.73v-3.25l6.23-3.58v-9.71c1.2-.48,2.05-1.66,2.05-3.03,0-1.82-1.47-3.29-3.28-3.29-.63,0-1.23.18-1.73.5l-5.1-4.58c.08-.29.13-.59.13-.91,0-1.82-1.47-3.29-3.29-3.29s-3.28,1.47-3.28,3.29,1.47,3.28,3.28,3.28c.53,0,1.04-.13,1.48-.35l5.28,4.74c-.04.2-.06.4-.06.61,0,1.31.77,2.44,1.89,2.96v8.11l-6.23,3.5v10.14l3.04-1.69,14.58-8.41v-22.65l-19.62-11.33ZM23.55,38.81c-.51,0-.93-.41-.93-.93s.42-.93.93-.93.93.42.93.93-.41.93-.93.93ZM33.91,22.58c-.51,0-.93-.41-.93-.92s.42-.93.93-.93.93.41.93.93-.41.92-.93.92ZM43.9,29.01c.51,0,.93.41.93.93s-.42.92-.93.92-.93-.41-.93-.92.42-.93.93-.93Z'/%3E%3Cpath fill='%2358C29F' d='M34.84,31.65c-.57,0-1.11.15-1.58.41l-4.19-3.63c.08-.27.12-.56.12-.85,0-1.81-1.47-3.29-3.28-3.29s-3.29,1.48-3.29,3.29,1.47,3.28,3.29,3.28c.55,0,1.07-.13,1.52-.37l4.23,3.66c-.07.25-.1.51-.1.78,0,1.82,1.47,3.29,3.28,3.29s3.29-1.47,3.29-3.29-1.47-3.28-3.29-3.28ZM25.91,28.51c-.51,0-.93-.42-.93-.93s.42-.93.93-.93.93.42.93.93-.42.93-.93.93ZM34.84,35.86c-.51,0-.93-.41-.93-.93s.42-.93.93-.93.93.42.93.93-.41.93-.93.93Z'/%3E%3C/svg%3E" />
+
+  <style>
+    /* Build-version badge — subtle, bottom-left. Value from app/version.py via
+       the app_version Jinja global; bumped each release (see CHANGELOG.md). */
+    .app-version{position:fixed;left:10px;bottom:8px;z-index:50;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+      letter-spacing:.04em;color:#8a8f98;opacity:.55}
+    .app-version:hover{opacity:.95}
+  </style>
+
+  <!-- Space Grotesk — brand display face (prototype-locked) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="/static/app.css" />
+  <!-- HTMX vendored locally (no CDN) -->
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<div class="app">
+
+  {# ============ TOP STRIP — dark kaidera brand navy ============ #}
+  <header class="strip">
+    <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+
+    <div class="brand-mark">
+      <img
+        class="lockup"
+        src="/static/kaidera-logo-official-white.svg"
+        alt="Kaidera OS"
+      />
+      <span class="sub">AI Worker OS</span>
+    </div>
+
+    {# Current-project indicator — updates on project switch (syncRail). Distinct from the
+       Cortex surface-version pill on the right (which is global, not a project). #}
+    <div class="strip-proj" title="Current project — changes when you switch projects"
+         style="display:flex;align-items:center;gap:5px;margin:0 6px 0 2px;font-size:12px;color:#aeb7c7">
+      <span aria-hidden="true" style="opacity:.55">▸</span>
+      <span id="topbar-project" style="font-weight:600;color:#e7ecf5">{{ selected_key or 'all projects' }}</span>
+    </div>
+
+    <div class="strip-divider" aria-hidden="true"></div>
+
+    {#
+      Top-bar nav tabs. Each switches the CENTER view via HTMX (GET /views/{view}
+      scoped to the current project). Only Dashboard is live in R1; the rest swap
+      in a "coming in a later increment" placeholder. The active tab is toggled
+      client-side on htmx:afterSwap (reads data-active-view off the swapped center).
+    #}
+    <nav class="strip-nav" aria-label="Console sections">
+      {% for view, label in nav_views.items() %}
+      <button
+        type="button"
+        class="strip-tab {{ 'is-active' if view == active_view else '' }}"
+        data-view="{{ view }}"
+        hx-get="/views/{{ view }}?project={{ selected_key or '' }}"
+        hx-target="#center-region"
+        hx-swap="innerHTML"
+      >{{ label }}</button>
+      {% endfor %}
+    </nav>
+
+    <div class="strip-right">
+      {#
+        Crew-activity strip. Always-present shell indicator surfacing the
+        orchestrator's live activity ring buffer, so "watch the crew
+        work" works from ANY center view — not buried in the Dispatch tab. Polls
+        /activity (scoped to the selected project) every 4s; syncRail keeps its
+        hx-get pointed at the current project on a project switch.
+      #}
+      <div
+        id="crew-activity-slot"
+        hx-get="/activity?project={{ selected_key or '' }}"
+        hx-trigger="load, every 4s"
+        hx-swap="innerHTML"
+        data-project="{{ selected_key or '' }}"
+      >
+        {% include "_activity_strip.html" %}
+      </div>
+
+      {#
+        Health pill. Polls /health-pill every 10s as the live-feed fallback.
+        TODO(SSE): replace this poll with an EventSource on /events once the
+        SSE bridge lands (push health + fleet deltas instead of polling).
+      #}
+      <div
+        id="health-pill-slot"
+        hx-get="/health-pill"
+        hx-trigger="load, every 10s"
+        hx-swap="innerHTML"
+      >
+        {% include "_health_pill.html" %}
+      </div>
+    </div>
+  </header>
+
+  {# ============ BODY — rail · agents · center · workspace ============ #}
+  <div class="body" id="body-grid">
+
+    {#
+      COLUMN DIVIDERS — drag to resize adjacent columns (center 1fr absorbs the
+      delta). Positioned on the grid seams via the width vars; wired in JS
+      (initColResizers). The workspace divider coexists with toggleDock() — it is
+      hidden + inert while the dock is collapsed to its strip.
+    #}
+    <div class="col-resizer rz-rail"   data-rz="rail"   role="separator" aria-orientation="vertical" aria-label="Resize project rail"></div>
+    <div class="col-resizer rz-agents" data-rz="agents" role="separator" aria-orientation="vertical" aria-label="Resize agents column"></div>
+    <div class="col-resizer rz-dock"   data-rz="dock"   role="separator" aria-orientation="vertical" aria-label="Resize workspace panel"></div>
+
+    {# ---------- COLUMN 1 — project rail ---------- #}
+    {% include "_rail.html" %}
+
+    {# ---------- COLUMNS 2 + 3 — agents + center (swap together) ---------- #}
+    <div id="scope-region" class="scope-region">
+      {% include "_scope.html" %}
+    </div>
+
+    {# ---------- COLUMN 4 — workspace: project-scoped file tree + viewer ---------- #}
+    {% include "_workspace.html" %}
+
+  </div>
+</div>
+
+<footer class="footnote">
+  Live Kaidera OS console · reads + writes the Cortex API + app-DB · interactive + autonomous agents
+</footer>
+
+<!-- Build-version badge (bottom-left, fixed). Bumped each release; see CHANGELOG.md. -->
+<div class="app-version" title="Kaidera OS Harness Console build — see CHANGELOG.md">v{{ app_version }}</div>
+
+<script>
+  // ---------------------------------------------------------------
+  //  Shell sync helpers (R1: tiny vanilla; no framework).
+  //  TODO(SSE): once GET /events lands, an EventSource pushes roster/
+  //  handoff/health deltas instead of the every-10s HTMX polls below.
+  // ---------------------------------------------------------------
+
+  // Re-sync the rail's active project highlight after the scope region swaps.
+  function syncRail(root) {
+    var marker = root.querySelector("[data-selected-key]");
+    var key = marker ? marker.getAttribute("data-selected-key") : null;
+    if (!key) return;
+    // Top-bar current-project indicator — updates live on a project switch. (Distinct from
+    // the Cortex surface-version pill on the right, which is global, not a project.)
+    var _pind = document.getElementById("topbar-project");
+    if (_pind) _pind.textContent = key;
+    document.querySelectorAll(".proj").forEach(function (el) {
+      el.classList.toggle("active", el.getAttribute("data-project-key") === key);
+    });
+    // keep the nav's per-project links pointed at the newly selected project
+    document.querySelectorAll(".strip-tab").forEach(function (tab) {
+      var view = tab.getAttribute("data-view");
+      tab.setAttribute("hx-get", "/views/" + view + "?project=" + key);
+    });
+    if (window.htmx) window.htmx.process(document.querySelector(".strip-nav"));
+    // re-scope the crew-activity strip to the newly selected project + refresh now
+    var act = document.getElementById("crew-activity-slot");
+    if (act && act.getAttribute("data-project") !== key) {
+      act.setAttribute("data-project", key);
+      act.setAttribute("hx-get", "/activity?project=" + key);
+      if (window.htmx) {
+        window.htmx.process(act);
+        window.htmx.ajax("GET", "/activity?project=" + key, { target: "#crew-activity-slot", swap: "innerHTML" });
+      }
+    }
+  }
+
+  // Toggle the active top-bar tab to match whatever center view is showing.
+  // The agent-detail view (data-active-view="agent") is NOT a top-bar tab, so
+  // it clears every tab's active state (none should look selected).
+  function syncNav(root) {
+    var view = root.querySelector("[data-active-view]");
+    var active = view ? view.getAttribute("data-active-view") : null;
+    document.querySelectorAll(".strip-tab").forEach(function (tab) {
+      tab.classList.toggle("is-active", active && tab.getAttribute("data-view") === active);
+    });
+  }
+
+  // Re-highlight the col-2 agent row that matches the center's selected agent.
+  // The center carries data-selected-agent ("" on the Dashboard) — so this also
+  // CLEARS the highlight when the center returns to the Dashboard.
+  function syncAgent(root) {
+    var marker = root.querySelector("[data-selected-agent]");
+    var key = marker ? marker.getAttribute("data-selected-agent") : "";
+    document.querySelectorAll(".ag[data-agent-key]").forEach(function (el) {
+      el.classList.toggle("is-open", !!key && el.getAttribute("data-agent-key") === key);
+    });
+  }
+
+  // Optimistic press feedback: mark the clicked agent row open immediately,
+  // before the HTMX center swap returns (afterSwap re-syncs authoritatively).
+  function markAgentOpen(btn) {
+    document.querySelectorAll(".ag[data-agent-key]").forEach(function (el) {
+      el.classList.toggle("is-open", el === btn);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  //  SETTINGS view (R4a) — sub-tab highlight + masked-secret reveal.
+  // ---------------------------------------------------------------
+
+  // Optimistically mark the clicked Settings sub-tab active (the body swaps via
+  // HTMX separately). Only one sub-nav item is .on at a time.
+  function markSettingsTab(btn) {
+    document.querySelectorAll(".set-nav-item[data-set-tab]").forEach(function (el) {
+      el.classList.toggle("on", el === btn);
+    });
+  }
+
+  // Mark a Settings sub-tab active BY ID (used by in-body cross-tab links, e.g.
+  // the Cortex tab's "Edit in System" button, which swaps #settings-body to the
+  // System tab and must move the sub-nav highlight to match).
+  function markSettingsTabById(id) {
+    document.querySelectorAll(".set-nav-item[data-set-tab]").forEach(function (el) {
+      el.classList.toggle("on", el.getAttribute("data-set-tab") === id);
+    });
+  }
+
+  // Masked-secret "Replace / hide" toggle on the System settings page. The real
+  // stored secret is NEVER sent to the client — the field only ever holds the
+  // "•••• set" placeholder (when a key is stored) or "". Clicking "Replace"
+  // unlocks the input and clears it so the operator can TYPE a new value;
+  // clicking again re-masks (restoring the placeholder, discarding any typing).
+  // Leaving it masked/blank on save means "keep the stored secret".
+  function toggleSecretReplace(btn) {
+    var wrap = btn.closest(".env-secret");
+    if (!wrap) return;
+    var inp = wrap.querySelector("input");
+    if (!inp) return;
+    var revealed = inp.getAttribute("data-revealed") === "1";
+    if (revealed) {
+      // re-mask: restore the stored placeholder, lock, discard typed value
+      var mask = inp.getAttribute("data-placeholder-mask") || "";
+      inp.value = mask;
+      inp.classList.add("masked");
+      inp.setAttribute("readonly", "readonly");
+      inp.setAttribute("data-revealed", "0");
+      btn.setAttribute("aria-label", "Replace secret");
+      btn.title = "Replace / hide";
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    } else {
+      // reveal-to-replace: clear + unlock so a new value can be typed
+      inp.value = "";
+      inp.classList.remove("masked");
+      inp.removeAttribute("readonly");
+      inp.setAttribute("data-revealed", "1");
+      inp.focus();
+      btn.setAttribute("aria-label", "Cancel replace");
+      btn.title = "Cancel — keep stored secret";
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+    }
+  }
+
+  // ---------------------------------------------------------------
+  //  WORKSPACE (col 4) — file-tree expand/collapse + lazy child load.
+  //  Folders toggle .open on their .tnode; the FIRST open fires a custom
+  //  'load-children' event on the .tchildren, whose hx-trigger="load-children
+  //  once" pulls that directory's entries (one HTTP round-trip per folder, the
+  //  first time it's opened). Re-opening a loaded folder is pure CSS.
+  // ---------------------------------------------------------------
+  function toggleTreeNode(rowEl) {
+    var node = rowEl.closest(".tnode");
+    if (!node) return;
+    var open = node.classList.toggle("open");
+    if (open) {
+      var kids = node.querySelector(":scope > .tchildren");
+      if (kids && kids.getAttribute("data-loaded") === "0") {
+        kids.setAttribute("data-loaded", "1");
+        // trigger the child fetch (hx-trigger="load-children once")
+        if (window.htmx) window.htmx.trigger(kids, "load-children");
+      }
+    }
+  }
+
+  // Mark a tree row as the active selection (clears any prior).
+  function markTreeFileActive(rowEl) {
+    document.querySelectorAll("#ws-dock .trow.active").forEach(function (el) {
+      el.classList.remove("active");
+    });
+    if (rowEl) rowEl.classList.add("active");
+  }
+
+  // Re-root the workspace dock to the selected project. Called after a project
+  // switch (scope-region swap). Reads the freshly-swapped scope's selected key
+  // and, if it differs from what the dock currently shows, re-fetches the whole
+  // dock (which re-roots the tree + clears the viewer).
+  function syncWorkspace(root) {
+    var marker = root.querySelector("[data-selected-key]");
+    var key = marker ? marker.getAttribute("data-selected-key") : null;
+    if (!key) return;
+    var dock = document.getElementById("ws-dock");
+    if (!dock) return;
+    if (dock.getAttribute("data-ws-key") === key) return; // already rooted here
+    if (window.htmx) {
+      window.htmx.ajax("GET", "/workspace/" + encodeURIComponent(key), {
+        target: "#ws-dock",
+        swap: "outerHTML",
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------
+  //  COLUMN RESIZERS + WORKSPACE COLLAPSE — the body grid's column widths
+  //  are CSS-var driven (--col-rail / --col-agents / --col-dock). Thin
+  //  draggable dividers (.col-resizer) sit on the grid seams and update the
+  //  adjacent var live on drag within min/max bounds; the center (1fr) absorbs
+  //  the delta. The workspace COLLAPSE drives --col-dock to a thin strip and
+  //  adds .collapsed to #ws-dock (CSS swaps the head/tree/viewer for a vertical
+  //  rail + expand arrow). The center|workspace divider coexists with collapse:
+  //  it is inert + hidden while collapsed, and expand restores the prior width.
+  //  Ported from the prototype (design/console-v2.html). Session-only (in-memory
+  //  on #body-grid); a project switch re-renders the dock expanded.
+  // ---------------------------------------------------------------
+  var DOCK_STRIP_W = 36; // collapsed strip width (px)
+  var COL_BOUNDS = {     // [min, max] px per resizable column
+    rail:   [180, 360],
+    agents: [280, 560],
+    dock:   [200, 560]
+  };
+  var COL_VAR = { rail: "--col-rail", agents: "--col-agents", dock: "--col-dock" };
+  var _dockPrevW = null; // remembered expanded --col-dock to restore on expand
+
+  function bodyGrid() { return document.getElementById("body-grid"); }
+
+  // Current width of a column var (px). Reads the COMPUTED value so it works
+  // whether the var was set inline (after a drag) or only via the stylesheet.
+  function colWidth(name) {
+    var b = bodyGrid();
+    if (!b) return 0;
+    var v = getComputedStyle(b).getPropertyValue(COL_VAR[name]);
+    return parseFloat(v) || 0;
+  }
+
+  // Set a column var, clamped to its [min, max] bounds (center 1fr absorbs it).
+  function setColWidth(name, px) {
+    var b = bodyGrid();
+    if (!b) return;
+    var bnd = COL_BOUNDS[name];
+    px = Math.max(bnd[0], Math.min(bnd[1], px));
+    b.style.setProperty(COL_VAR[name], px + "px");
+  }
+
+  function toggleDock() {
+    var dock = document.getElementById("ws-dock");
+    var body = bodyGrid();
+    var btn = document.getElementById("ws-dock-collapse");
+    if (!dock || !body) return;
+    var collapsing = !dock.classList.contains("collapsed");
+    if (collapsing) {
+      // remember the live width so expand restores exactly what the user had
+      var cur = colWidth("dock");
+      if (cur) _dockPrevW = cur + "px";
+      dock.classList.add("collapsed");
+      body.classList.add("dock-collapsed");
+      body.style.setProperty("--col-dock", DOCK_STRIP_W + "px");
+      dock.setAttribute("aria-expanded", "false");
+    } else {
+      dock.classList.remove("collapsed");
+      body.classList.remove("dock-collapsed");
+      body.style.setProperty("--col-dock", _dockPrevW || "248px");
+      dock.setAttribute("aria-expanded", "true");
+    }
+    if (btn) {
+      btn.title = collapsing ? "Expand workspace panel" : "Collapse workspace panel";
+      btn.setAttribute("aria-label", btn.title);
+    }
+  }
+
+  // Wire each divider: pointerdown starts a drag, pointermove updates the var,
+  // pointerup ends it. The dock divider grows when dragging LEFT (toward the
+  // center); rail/agents grow when dragging RIGHT. Double-click resets to the
+  // column's default. The dock divider is skipped while the dock is collapsed.
+  function initColResizers() {
+    var body = bodyGrid();
+    if (!body) return;
+    document.querySelectorAll(".col-resizer").forEach(function (handle) {
+      var name = handle.getAttribute("data-rz"); // rail | agents | dock
+      handle.addEventListener("pointerdown", function (e) {
+        // never resize the workspace while it is collapsed to a strip
+        if (name === "dock" && body.classList.contains("dock-collapsed")) return;
+        e.preventDefault();
+        var startX = e.clientX;
+        var startW = colWidth(name);
+        var dir = (name === "dock") ? -1 : 1;
+        handle.classList.add("dragging");
+        document.body.classList.add("col-resizing");
+        try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+        function onMove(ev) { setColWidth(name, startW + dir * (ev.clientX - startX)); }
+        function onUp(ev) {
+          handle.classList.remove("dragging");
+          document.body.classList.remove("col-resizing");
+          try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          handle.removeEventListener("pointercancel", onUp);
+          if (name === "dock") _dockPrevW = colWidth("dock") + "px"; // keep restore width fresh
+        }
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp);
+        handle.addEventListener("pointercancel", onUp);
+      });
+      // double-click a divider resets that column to its default
+      handle.addEventListener("dblclick", function () {
+        if (name === "dock" && body.classList.contains("dock-collapsed")) return;
+        var defaults = { rail: 252, agents: 360, dock: 248 };
+        setColWidth(name, defaults[name]);
+        if (name === "dock") _dockPrevW = colWidth("dock") + "px";
+      });
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initColResizers);
+  } else {
+    initColResizers();
+  }
+
+  // ---------------------------------------------------------------
+  //  WORKSPACE CENTER FILE PANE — a closeable pane that slides in from
+  //  the RIGHT and covers the center (the agent-detail / dashboard stays
+  //  mounted underneath, like the Settings drawer). CLICKING a tree file
+  //  opens it here in PREVIEW; an Edit toggle (in the pane header) flips
+  //  to an editable textarea; ✕ / Esc dismiss it and reveal the center.
+  // ---------------------------------------------------------------
+
+  // Open a file in the center pane (preview). Marks the row active, loads the
+  // preview body, and slides the overlay in over the center.
+  function openWsFile(key, path, rowEl) {
+    var ov = document.getElementById("ws-editor-overlay");
+    var body = document.getElementById("ws-editor-body");
+    if (!ov || !body || !window.htmx) return;
+    closeWsCtxMenu();
+    markTreeFileActive(rowEl || null);
+    window.htmx.ajax(
+      "GET",
+      "/workspace/" + encodeURIComponent(key) + "/edit?path=" + encodeURIComponent(path) + "&mode=preview",
+      { target: "#ws-editor-body", swap: "innerHTML" }
+    );
+    ov.classList.add("on");
+    ov.setAttribute("aria-hidden", "false");
+  }
+
+  // Close the file pane: slide it out and reveal the center underneath (never
+  // swapped away, so its state is intact). The body is cleared a beat later so
+  // the slide-out animation reads cleanly and no stale file flashes on reopen.
+  function closeWsEditor() {
+    var ov = document.getElementById("ws-editor-overlay");
+    if (!ov) return;
+    if (!ov.classList.contains("on")) return;
+    ov.classList.remove("on");
+    ov.setAttribute("aria-hidden", "true");
+    markTreeFileActive(null);
+    setTimeout(function () {
+      if (!ov.classList.contains("on")) {
+        var body = document.getElementById("ws-editor-body");
+        if (body) body.replaceChildren(); // clear (no innerHTML; lint-safe)
+      }
+    }, 220);
+  }
+
+  // mark the edit textarea dirty (shows the "● unsaved" pip in the header).
+  function wsEditorDirty() {
+    var pip = document.getElementById("ed-dirty");
+    if (pip) pip.hidden = false;
+  }
+
+  // Esc closes the file pane first (when open), then the ctx menu.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var menu = document.getElementById("ws-ctx-menu");
+    if (menu && menu.classList.contains("on")) { e.preventDefault(); closeWsCtxMenu(); return; }
+    var ov = document.getElementById("ws-editor-overlay");
+    if (ov && ov.classList.contains("on")) { e.preventDefault(); closeWsEditor(); }
+  });
+
+  // ---------------------------------------------------------------
+  //  WORKSPACE FILE ACTIONS — new / rename / move / delete, all via the
+  //  hidden #ws-action-form (htmx POST → toast → HX-Trigger:ws-tree-changed).
+  //  Every mutation goes through workspace.py's repo_root gate server-side.
+  // ---------------------------------------------------------------
+
+  // POST an action through the hidden form: set method/url + hidden fields, then
+  // htmx.ajax with those values so the toast swaps in and the tree refreshes.
+  function wsPostAction(url, fields) {
+    if (!window.htmx) return;
+    var params = new URLSearchParams();
+    Object.keys(fields || {}).forEach(function (k) { params.set(k, fields[k]); });
+    window.htmx.ajax("POST", url, {
+      target: "#ws-toast-slot",
+      swap: "innerHTML",
+      values: fields || {},
+    });
+  }
+
+  function wsKey() {
+    var dock = document.getElementById("ws-dock");
+    return dock ? dock.getAttribute("data-ws-key") : null;
+  }
+
+  // New file/folder. Default parent = the active row's dir (or its parent), else
+  // root. Prompts for a name, then POSTs /workspace/{key}/new.
+  function wsNew(kind, parentPath) {
+    var key = wsKey(); if (!key) return;
+    if (parentPath == null) parentPath = _wsDefaultParent();
+    var label = kind === "folder" ? "New folder name" : "New file name";
+    var dflt = kind === "folder" ? "new-folder" : "untitled.md";
+    var name = window.prompt(label + (parentPath ? " (in " + parentPath + "/)" : ""), dflt);
+    if (name == null) return;
+    name = name.trim();
+    if (!name) return;
+    wsPostAction("/workspace/" + encodeURIComponent(key) + "/new", {
+      parent: parentPath || "", name: name, kind: kind,
+    });
+  }
+
+  // pick a sensible parent dir for a new node: the active row if it's a dir,
+  // else the active row's parent dir, else the root.
+  function _wsDefaultParent() {
+    var act = document.querySelector("#ws-dock .trow.active, #ws-dock .trow.menu-open");
+    if (!act) return "";
+    var path = act.getAttribute("data-path") || "";
+    if (act.getAttribute("data-dir") === "1") return path;
+    var slash = path.lastIndexOf("/");
+    return slash > 0 ? path.slice(0, slash) : "";
+  }
+
+  function wsRename(path, name, isDir) {
+    var key = wsKey(); if (!key) return;
+    var nn = window.prompt("Rename " + (isDir ? "folder" : "file"), name || "");
+    if (nn == null) return;
+    nn = nn.trim();
+    if (!nn || nn === name) return;
+    wsPostAction("/workspace/" + encodeURIComponent(key) + "/rename", { path: path, name: nn });
+  }
+
+  function wsMove(path, name) {
+    var key = wsKey(); if (!key) return;
+    var dest = window.prompt("Move " + name + " into folder (path; blank = root)", "");
+    if (dest == null) return;
+    wsPostAction("/workspace/" + encodeURIComponent(key) + "/move", { path: path, dest: dest.trim() });
+  }
+
+  function wsDelete(path, name, isDir) {
+    var key = wsKey(); if (!key) return;
+    var msg = "Delete " + (isDir ? "folder (and everything in it)" : "file") + ":\n" + path + " ?";
+    if (!window.confirm(msg)) return;
+    // if the deleted file is open in the center pane, close it.
+    closeWsEditor();
+    wsPostAction("/workspace/" + encodeURIComponent(key) + "/delete", { path: path });
+  }
+
+  // ---------------------------------------------------------------
+  //  CONTEXT MENU (⋯ / right-click) — open · rename · move · new · delete.
+  //  Acts on the row's data-path/data-name/data-dir. Dir-only items hide for
+  //  file rows. Positioned within the viewport; click-away / Esc close it.
+  // ---------------------------------------------------------------
+  var _wsCtxTarget = null; // {path, name, dir}
+
+  function openWsCtxMenu(ev, rowEl) {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    if (!rowEl) return;
+    var menu = document.getElementById("ws-ctx-menu");
+    if (!menu) return;
+    _wsCtxTarget = {
+      path: rowEl.getAttribute("data-path") || "",
+      name: rowEl.getAttribute("data-name") || "",
+      dir: rowEl.getAttribute("data-dir") === "1",
+    };
+    document.querySelectorAll("#ws-dock .trow.menu-open").forEach(function (r) { r.classList.remove("menu-open"); });
+    rowEl.classList.add("menu-open");
+    var pathEl = document.getElementById("ws-ctx-path");
+    if (pathEl) pathEl.textContent = _wsCtxTarget.path;
+    // dir-only items (new file/folder + their separator) hidden for file rows
+    menu.querySelectorAll("[data-dir-only]").forEach(function (el) {
+      el.style.display = _wsCtxTarget.dir ? "" : "none";
+    });
+    menu.classList.add("on");
+    menu.setAttribute("aria-hidden", "false");
+    // position within the viewport
+    var mw = 186, mh = menu.offsetHeight || 300;
+    var x = ev ? ev.clientX : 200, y = ev ? ev.clientY : 200;
+    if (x + mw > window.innerWidth) x = window.innerWidth - mw - 8;
+    if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
+    menu.style.left = Math.max(8, x) + "px";
+    menu.style.top = Math.max(8, y) + "px";
+  }
+
+  function closeWsCtxMenu() {
+    var menu = document.getElementById("ws-ctx-menu");
+    if (menu) { menu.classList.remove("on"); menu.setAttribute("aria-hidden", "true"); }
+    document.querySelectorAll("#ws-dock .trow.menu-open").forEach(function (r) { r.classList.remove("menu-open"); });
+  }
+
+  // wire the menu items (delegated) once
+  (function bindWsCtxMenu() {
+    var menu = document.getElementById("ws-ctx-menu");
+    if (!menu) return;
+    menu.addEventListener("click", function (e) {
+      var item = e.target.closest(".ctx-item");
+      if (!item) return;
+      var op = item.getAttribute("data-op");
+      var t = _wsCtxTarget;
+      closeWsCtxMenu();
+      if (!t) return;
+      if (op === "open") {
+        if (t.dir) {
+          var row = document.querySelector('#ws-dock .trow[data-path="' + (window.CSS && CSS.escape ? CSS.escape(t.path) : t.path) + '"]');
+          if (row && row.getAttribute("data-dir") === "1") toggleTreeNode(row);
+        } else { openWsFile(wsKey(), t.path, null); }
+      } else if (op === "rename") { wsRename(t.path, t.name, t.dir); }
+      else if (op === "move") { wsMove(t.path, t.name); }
+      else if (op === "newFile") { wsNew("file", t.path); }
+      else if (op === "newFolder") { wsNew("folder", t.path); }
+      else if (op === "delete") { wsDelete(t.path, t.name, t.dir); }
+    });
+  })();
+
+  // click-away closes the ctx menu (capture so it beats row handlers)
+  document.addEventListener("click", function (e) {
+    var menu = document.getElementById("ws-ctx-menu");
+    if (!menu || !menu.classList.contains("on")) return;
+    if (!menu.contains(e.target)) closeWsCtxMenu();
+  });
+
+  // ---------------------------------------------------------------
+  //  DRAG-DROP MOVE — drag a tree row onto a folder row (or the empty tree
+  //  area = root) to move it. Delegated on #ws-dock so lazily-loaded rows work.
+  // ---------------------------------------------------------------
+  var _wsDragPath = null;
+  (function bindWsDnD() {
+    var dock = document.getElementById("ws-dock");
+    if (!dock) return;
+    dock.addEventListener("dragstart", function (e) {
+      var row = e.target.closest(".trow"); if (!row) return;
+      _wsDragPath = row.getAttribute("data-path");
+      row.classList.add("cut");
+      if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", _wsDragPath); } catch (x) {} }
+    });
+    dock.addEventListener("dragend", function () {
+      dock.querySelectorAll(".trow.cut").forEach(function (r) { r.classList.remove("cut"); });
+      dock.querySelectorAll(".drop-into").forEach(function (r) { r.classList.remove("drop-into"); });
+      _wsDragPath = null;
+    });
+    dock.addEventListener("dragover", function (e) {
+      if (!_wsDragPath) return;
+      var row = e.target.closest(".trow.is-dir");
+      var tree = e.target.closest("#ws-tree");
+      if (row || tree) { e.preventDefault();
+        dock.querySelectorAll(".drop-into").forEach(function (r) { r.classList.remove("drop-into"); });
+        (row || tree).classList.add("drop-into");
+      }
+    });
+    dock.addEventListener("dragleave", function (e) {
+      var el = e.target.closest(".drop-into");
+      if (el && !el.contains(e.relatedTarget)) el.classList.remove("drop-into");
+    });
+    dock.addEventListener("drop", function (e) {
+      if (!_wsDragPath) return;
+      var row = e.target.closest(".trow.is-dir");
+      var tree = e.target.closest("#ws-tree");
+      var destEl = row || tree;
+      if (!destEl) return;
+      e.preventDefault();
+      destEl.classList.remove("drop-into");
+      var dest = row ? (row.getAttribute("data-path") || "") : ""; // tree area = root
+      var src = _wsDragPath;
+      _wsDragPath = null;
+      if (dest === src) return;
+      var key = wsKey(); if (!key) return;
+      wsPostAction("/workspace/" + encodeURIComponent(key) + "/move", { path: src, dest: dest });
+    });
+  })();
+
+  // --- Sticky scroll across the center pane's timed auto-refresh -------------
+  // The center views poll on a timer and swap #center-region's innerHTML, which
+  // resets every inner scroller to the top — so scrolling down to watch a live
+  // run (or read the feed) got yanked back up each tick. We snapshot each known
+  // scroller BEFORE the swap and restore AFTER: if the user was at the bottom
+  // (following live output — an agent's transcript/chat) we keep them pinned to
+  // the bottom; otherwise we restore their exact position (so reading the
+  // newest-at-top history feed, or scrolled-up content, isn't disturbed). The
+  // transcript + chat default to the bottom on first open (newest is what you want).
+  var _CENTER_SCROLLERS = [".ad-scroll", "#ad-feed", ".hi-feed-pane",
+                           ".dp-activity-list", ".an-scroll", ".center"];
+  var _BOTTOM_DEFAULT = { ".ad-scroll": 1, "#ad-feed": 1, ".hi-feed-pane": 1 };   // newest-at-bottom panes
+  var _scrollMemo = {};
+  function _snapshotScroll() {
+    _scrollMemo = {};
+    var root = document.getElementById("center-region");
+    if (!root) return;
+    _CENTER_SCROLLERS.forEach(function (sel) {
+      var el = root.querySelector(sel);
+      if (!el || el.scrollHeight <= el.clientHeight) return;   // not actually scrollable
+      _scrollMemo[sel] = {
+        top: el.scrollTop,
+        atBottom: (el.scrollHeight - el.scrollTop - el.clientHeight) < 24,
+      };
+    });
+  }
+  function _restoreScroll() {
+    var root = document.getElementById("center-region");
+    if (!root) return;
+    _CENTER_SCROLLERS.forEach(function (sel) {
+      var el = root.querySelector(sel);
+      if (!el) return;
+      var memo = _scrollMemo[sel];
+      if (memo) {
+        el.scrollTop = memo.atBottom ? el.scrollHeight : memo.top;
+      } else if (_BOTTOM_DEFAULT[sel]) {
+        el.scrollTop = el.scrollHeight;                        // first open → newest at bottom
+      }
+    });
+  }
+  document.body.addEventListener("htmx:beforeSwap", function (evt) {
+    if (evt.detail && evt.detail.target && evt.detail.target.id === "center-region") {
+      _snapshotScroll();
+    }
+  });
+
+  document.body.addEventListener("htmx:afterSwap", function (evt) {
+    var t = evt.detail.target;
+    if (!t) return;
+    // A whole-project swap re-renders the agents column too, so reset the
+    // agent highlight (the new center is the Dashboard) and re-root the dock.
+    if (t.id === "scope-region") { syncRail(t); syncNav(t); syncAgent(t); syncWorkspace(t); }
+    if (t.id === "center-region") { syncNav(t); syncAgent(t); requestAnimationFrame(_restoreScroll); }
+    // File pane body loaded → focus the textarea if we're in edit mode.
+    if (t.id === "ws-editor-body") {
+      var ta = document.getElementById("ws-editor-ta");
+      if (ta) { ta.focus(); }
+    }
+  });
+
+  // After a successful SAVE the server fires HX-Trigger:ws-saved; after a file
+  // action it fires ws-tree-changed. Both refresh the col-4 tree out of band.
+  function _wsRefreshTree() {
+    var dock = document.getElementById("ws-dock");
+    if (!dock || !window.htmx) return;
+    var key = dock.getAttribute("data-ws-key");
+    if (!key) return;
+    window.htmx.ajax("GET", "/workspace/" + encodeURIComponent(key) + "/tree?path=", {
+      target: "#ws-tree",
+      swap: "innerHTML",
+    });
+  }
+  document.body.addEventListener("ws-saved", function () {
+    _wsRefreshTree();
+    var pip = document.getElementById("ed-dirty"); if (pip) pip.hidden = true;
+  });
+  document.body.addEventListener("ws-tree-changed", _wsRefreshTree);
+
+  // Auto-dismiss a workspace toast after a few seconds.
+  document.body.addEventListener("htmx:afterSwap", function (evt) {
+    if (evt.detail.target && evt.detail.target.id === "ws-toast-slot") {
+      var slot = evt.detail.target;
+      setTimeout(function () { slot.replaceChildren(); }, 3200);
+    }
+  });
+</script>
+</body>
+</html>

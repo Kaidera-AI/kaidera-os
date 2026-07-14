@@ -1,0 +1,112 @@
+{#
+  CREW ACTIVITY STRIP — the always-present shell-header indicator that surfaces
+  the orchestrator's in-memory activity ring buffer PROMINENTLY +
+  PERSISTENTLY, so "watch the crew work" works from ANY center view (not buried
+  in the Dispatch tab). Polled by #crew-activity-slot (HTMX every ~4s); the whole
+  partial is replaced each poll, so the feed stays live without JS state.
+
+  A native <details> drives the expand/collapse (HTMX-swap-safe — no JS). The
+  collapsed SUMMARY is ALWAYS the at-a-glance line: a status dot (live/watching/off
+  — it PULSES when live), the newest crew action inline, a live count, and a
+  prominent "Watch" DOORWAY that lands the operator on the full /crew view.
+  Expanding reveals the recent feed. The newest action is never hidden behind the
+  collapse — it shows in the always-visible summary line.
+
+  Context (main._activity_strip_context):
+    act_status      : "live" | "watching" | "off"
+    act_items       : [{kind, level, text, agent, handoff_short, ago}, ...] newest-first
+    act_count       : len(act_items)
+    act_latest      : act_items[0] or None
+    act_autonomous_on, act_inflight, act_cap, act_project, act_no_orch
+#}
+<details class="crew {{ 'is-' ~ act_status }}{% if act_items %} has-items{% endif %}">
+  {# The standalone /crew page is retired (the agent-detail center pane owns live
+     transcripts now). "Watch" lands on whoever is currently working — that agent's
+     live transcript in the center — and falls back to the Dispatch fleet feed when
+     nothing is active. #}
+  {% set watch_url = ('/agents/' ~ act_project ~ '/' ~ act_latest.agent) if (act_latest and act_latest.agent and act_project) else ('/views/dispatch?project=' ~ act_project) %}
+  <summary class="crew-sum" title="Crew activity — the orchestrator picks up handoffs and runs agents; click to expand the recent feed">
+    <span class="crew-dot {{ act_status }}" aria-hidden="true"></span>
+    <span class="crew-label">Crew</span>
+    {% if act_latest %}
+    <span class="crew-now">
+      <span class="crew-k kind-{{ act_latest.kind }} lvl-{{ act_latest.level }}">{{ act_latest.kind | replace('_', ' ') }}</span>
+      <span class="crew-txt">{{ act_latest.text }}</span>
+      {% if act_latest.ago %}<span class="crew-ago">{{ act_latest.ago }}</span>{% endif %}
+    </span>
+    {% else %}
+    <span class="crew-now crew-now-empty">
+      {% if act_status == 'off' %}idle · autonomous OFF{% else %}watching — no activity yet{% endif %}
+    </span>
+    {% endif %}
+    {% if act_count %}<span class="crew-count" title="recent crew actions in view">{{ act_count }}</span>{% endif %}
+    {# DOORWAY → the full "watch the crew work" view. Stop the click from toggling
+       the <details> (we want to navigate, not expand) and fire the HTMX swap into
+       the center region. Always present so the crew view is one click from any
+       header. #}
+    <a class="crew-watch {{ 'is-live' if act_status == 'live' else '' }}"
+       href="#"
+       hx-get="{{ watch_url }}"
+       hx-target="#center-region"
+       hx-swap="innerHTML"
+       onclick="event.stopPropagation();"
+       title="Watch the active agent work — opens its live transcript">
+      {% if act_status == 'live' %}<span class="crew-watch-dot" aria-hidden="true"></span>{% endif %}
+      Watch
+      <svg class="crew-watch-ar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </a>
+    <svg class="crew-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+  </summary>
+
+  <div class="crew-panel">
+    <div class="crew-head">
+      <span class="crew-head-t">
+        <span class="crew-dot {{ act_status }}" aria-hidden="true"></span>
+        Orchestrator · crew activity
+      </span>
+      <span class="crew-head-meta">
+        {% if act_autonomous_on %}
+          <b>{{ 'live' if act_status == 'live' else 'watching' }}</b> · {{ act_inflight }}/{{ act_cap }} running
+        {% else %}
+          <b>idle</b> · autonomous OFF
+        {% endif %}
+      </span>
+      <a class="crew-head-watch"
+         href="#"
+         hx-get="{{ watch_url }}"
+         hx-target="#center-region"
+         hx-swap="innerHTML"
+         title="Watch the active agent work — opens its live transcript">
+        open live view
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+    </div>
+
+    {% if act_items %}
+    <ul class="crew-list">
+      {% for a in act_items %}
+      <li class="crew-row lvl-{{ a.level }} kind-{{ a.kind }}">
+        <span class="crew-row-k">{{ a.kind | replace('_', ' ') }}</span>
+        <span class="crew-row-txt">{{ a.text }}</span>
+        {% if a.handoff_short %}<code class="crew-row-hid">{{ a.handoff_short }}</code>{% endif %}
+        {% if a.ago %}<span class="crew-row-ago">{{ a.ago }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="crew-empty">
+      {% if act_no_orch %}
+        The autonomous orchestrator didn't start — the console is running without the crew loop. No live activity to show.
+      {% elif act_project %}
+        {% if act_autonomous_on %}
+        The orchestrator is watching <b>{{ act_project }}</b>'s handoff feed. Picked-up · running · completed events appear here the instant they happen.
+        {% else %}
+        Nothing running — project dispatch is <b>OFF</b> for {% if act_project %}<b>{{ act_project }}</b>{% else %}this project{% endif %}. Flip <b>Project dispatch</b> ON to let the orchestrator auto-run agents on new handoffs.
+        {% endif %}
+      {% else %}
+        Select a project to watch its crew. The orchestrator picks up new handoffs and runs the resolved agents — every action shows up here, live.
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+</details>

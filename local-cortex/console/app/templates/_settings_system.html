@@ -1,0 +1,211 @@
+{#
+  SETTINGS · System page (R4a, FUNCTIONAL). A schema-driven editor over the
+  console-local settings store (app-DB canonical; gitignored JSON seed/fallback
+  only when degraded). NOT the real Cortex/system .env: this never reads or writes
+  any real secret file.
+
+  The whole page is one <form> that POSTs to /settings/system (urlencoded) via
+  HTMX, swapping the result banner (#sys-save-result) in place. Fields are grouped
+  into collapsible cards built from `groups` (app.settings.view_groups()):
+    - text/number  → editable .set-input
+    - bool         → .set-switch (a hidden mirror input carries true/false)
+    - secret       → masked field showing "•••• set" when stored, empty otherwise,
+                     with a reveal/replace affordance (the stored secret is NEVER
+                     sent to the client — reveal just unlocks the input to TYPE a
+                     replacement; leaving it masked/blank keeps the stored value)
+    - readonly     → locked, non-editable display
+
+  Context:
+    groups : [{id,title,sub,icon,open,secret_count,field_count,fields:[...]}]
+    saved  : optional post-save flag — when truthy, render the confirmation banner
+    saved_count / saved_error : confirmation detail (see _settings_saved.html)
+#}
+<style>
+  /* Provider key-test (System tab) — inline "Test" button + ✓/✗ result.
+     Scoped in this partial (not app.css) to keep the change self-contained. */
+  .env-test, .cp-test {
+    flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+    padding: 4px 11px; border-radius: var(--r-sm); cursor: pointer;
+    color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line);
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .env-test:hover, .cp-test:hover { background: var(--surface-3); color: var(--text); }
+  .env-test:disabled, .cp-test:disabled { opacity: .5; cursor: default; }
+  .env-test.htmx-request, .cp-test.htmx-request { opacity: .5; }
+  .cp-test { margin-left: 2px; }
+  .keytest-slot { display: inline-flex; align-items: center; min-width: 0; }
+  .keytest { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1.35; }
+  .keytest svg { width: 13px; height: 13px; flex: none; }
+  .keytest .keytest-msg { min-width: 0; }
+  .keytest.ok { color: var(--ok); }
+  .keytest.bad { color: var(--alert); }
+</style>
+<div class="set-inner">
+  <div class="set-page on" id="setpage-system">
+    <div class="set-page-h">System</div>
+    <div class="set-page-sub">Console configuration — <b>Cortex connection</b>, harness, and app preferences. Provider keys live in the Providers surface when it is enabled for this edition. Stored locally in the console app-DB, applied on reload. This is the console's own store, <b>not</b> the real Cortex <code>.env</code>.</div>
+
+    <div class="set-banner secure">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <div>Secrets live only in the <b>local console settings store</b> — never committed, never rendered back into the page. A stored key shows as <code>•••• set</code>; use <b>Replace</b> to enter a new one. Local single-user store.</div>
+    </div>
+
+    {# Save target: the result banner swaps in here after POST /settings/system. #}
+    <div id="sys-save-result">
+      {% if saved is defined and (saved or saved_error) %}
+        {% include "_settings_saved.html" %}
+      {% endif %}
+    </div>
+
+    <form
+      id="sys-form"
+      hx-post="/settings/system?project={{ selected_key or '' }}"
+      hx-target="#sys-save-result"
+      hx-swap="innerHTML"
+    >
+      {# collapsible groups, schema-driven #}
+      {% for g in groups %}
+      <details class="env-group" {{ 'open' if g.open else '' }}>
+        <summary class="env-summary">
+          <svg class="eg-car" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          <span class="eg-ic">{{ g.icon | safe }}</span>
+          <span>
+            <span class="eg-t">{{ g.title }}</span>
+            <span class="eg-s">{{ g.sub }}</span>
+          </span>
+          <span class="eg-meta">
+            {% if g.secret_count %}
+            <span class="eg-count secrets">{{ g.secret_count }} secret{{ 's' if g.secret_count > 1 else '' }}</span>
+            {% else %}
+            <span class="eg-count">{{ g.field_count }} field{{ 's' if g.field_count > 1 else '' }}</span>
+            {% endif %}
+          </span>
+        </summary>
+
+        <div class="env-body">
+          {% for f in g.fields %}
+          <div class="env-row">
+            <span class="env-key">
+              {% if f.type == "readonly" %}
+              <svg class="lock-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              {% endif %}
+              {{ f.label }}
+            </span>
+            <span class="env-eq" aria-hidden="true">=</span>
+            <span class="env-val">
+
+              {% if f.type == "secret" %}
+              {#
+                Masked secret. The visible input is readonly + shows the mask
+                placeholder ("•••• set") when a secret is stored, empty otherwise.
+                "Replace" unlocks it (clears + makes it editable) so the operator
+                can TYPE a new value; "Hide" re-masks. The stored secret is never
+                placed in the DOM — only the placeholder is. A blank/unchanged
+                submit means "keep the stored secret".
+              #}
+              <span class="env-secret" data-has-value="{{ '1' if f.has_value else '0' }}">
+                <input
+                  class="set-input masked"
+                  type="text"
+                  name="{{ f.key }}"
+                  value="{{ f.display }}"
+                  placeholder="{{ 'enter a key…' }}"
+                  data-placeholder-mask="{{ f.display }}"
+                  data-revealed="0"
+                  readonly
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button class="env-eye" type="button" aria-label="Replace secret" title="Replace / hide" onclick="toggleSecretReplace(this)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </span>
+              {#
+                Test — server-side probe of THIS key against the provider (a cheap
+                read-only model-list / key-info call, never a completion). Sends the
+                field name + the current input value (a freshly-typed key tests as-is
+                for pre-save feedback; a still-masked field falls back to the stored
+                key). Result swaps into the per-row slot.
+              #}
+              <button
+                class="env-test"
+                type="button"
+                title="Check this key against the provider"
+                hx-post="/settings/system/test-key?project={{ selected_key or '' }}"
+                hx-vals='{"field": "{{ f.key }}"}'
+                hx-include="[name='{{ f.key }}']"
+                hx-target="#keytest-{{ f.key }}"
+                hx-swap="innerHTML"
+                hx-disabled-elt="this"
+              >Test</button>
+              <span class="keytest-slot" id="keytest-{{ f.key }}"></span>
+
+              {% elif f.type == "bool" %}
+              {#
+                Boolean flag → switch. The checkbox is presentational; a hidden
+                text input mirrors true/false so the urlencoded POST carries the
+                value reliably (an unchecked checkbox would otherwise be omitted).
+              #}
+              <label class="set-switch" title="Toggle {{ f.label }}">
+                <input
+                  type="checkbox"
+                  {{ 'checked' if f.value else '' }}
+                  onchange="this.closest('.env-val').querySelector('.flag-mirror').value = this.checked ? 'true' : 'false'; this.closest('.env-val').querySelector('.flag-v').textContent = this.checked ? 'true' : 'false';"
+                />
+                <span class="track"></span><span class="knob"></span>
+              </label>
+              <input type="hidden" class="flag-mirror" name="{{ f.key }}" value="{{ 'true' if f.value else 'false' }}" />
+              <span class="flag-v">{{ 'true' if f.value else 'false' }}</span>
+
+              {% elif f.type == "readonly" %}
+              <input class="set-input flex1" type="text" name="{{ f.key }}" value="{{ f.value }}" readonly style="opacity:.85;cursor:default" />
+
+              {% elif f.type == "number" %}
+              <input class="set-input w-sm" type="number" name="{{ f.key }}" value="{{ f.value }}" step="1" min="0" />
+
+              {% else %}
+              <input class="set-input flex1" type="text" name="{{ f.key }}" value="{{ f.value }}" placeholder="{{ f.placeholder }}" autocomplete="off" spellcheck="false" />
+              {% endif %}
+
+              {% if f.hint %}<span class="env-hint">{{ f.hint }}</span>{% endif %}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endfor %}
+
+      {# footer actions — Save posts the form; Reset re-pulls the System tab. #}
+      <div class="cfg-foot">
+        <button class="save" type="submit">Save settings</button>
+        <button
+          class="cancel"
+          type="button"
+          hx-get="/settings/system?project={{ selected_key or '' }}"
+          hx-target="#settings-body"
+          hx-swap="innerHTML"
+        >Cancel</button>
+        <button
+          class="reset"
+          type="button"
+          hx-get="/settings/system?project={{ selected_key or '' }}"
+          hx-target="#settings-body"
+          hx-swap="innerHTML"
+        >Reload from store</button>
+      </div>
+    </form>
+
+    {#
+      CUSTOM PROVIDERS — operator-added provider credentials (name + base URL +
+      masked API key) beyond the fixed built-in keys above. Kept OUTSIDE the main
+      #sys-form (it has its own HTMX POSTs to /settings/system/custom-provider),
+      so it never interferes with the System save. The region self-swaps on
+      add/remove (#sys-custom-providers).
+    #}
+    <div class="set-subhead">
+      <span class="ssh-t">Custom providers</span>
+      <span class="ssh-s">Add an extra provider with its own base URL + API key. Stored locally + masked, separate from the System save above.</span>
+    </div>
+    {% include "_settings_custom_providers.html" %}
+  </div>
+</div>

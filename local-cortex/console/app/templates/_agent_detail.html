@@ -1,0 +1,645 @@
+{#
+  AGENT-DETAIL center view. Rendered when an agent is clicked in column 2 — for
+  EVERY agent (interactive lead or autonomous worker), not just the one you talk
+  to. Shows THAT agent's actual work.
+
+  Sections, top → bottom:
+    1. Header  — back-to-dashboard, avatar, name · compound id · type,
+                 harness · model · reasoning sub, token-usage readout.
+    2. LIVE WORK TRANSCRIPT (the PROMINENT main content) — this agent's runs read
+                 from the durable RunState SSOT store (Milestone 1 T7/T12), filtered
+                 to this agent. The selected run's streamed OUTPUT (segment-typed:
+                 output / thinking / tool) renders in the SAME markup/CSS as the
+                 /crew transcript pane. When a run is live the pane is pushed by the
+                 T8 /runstate/stream SSE channel (no poll) so it fills in as the
+                 agent works. A compact run strip lists the agent's other recent runs
+                 (click to pin). Clean empty state when no runs.
+    3. ACTIVITY TIMELINE ("what it has done") — the agent's durable Cortex /history
+                 (decisions + tool-use), summarized server-side, newest at bottom.
+    4. Composer — LIVE chat input; SEND streams a claude-code reply (R2b).
+
+  Context (all derived server-side in main._agent_detail_view):
+    `selected`        : project record (for the back-button label)
+    `selected_key`    : project key
+    `agent`           : flattened agent view (name, display_name, initials,
+                        role, model, harness, thinking, writer_scope,
+                        capabilities[], is_test, interactive)
+    `agent_compound`  : "name@project"
+    `agent_reasoning` : reasoning label or "—"
+    `agent_usage`     : {total_h, input, output, cached} or None (→ usage · n/a)
+    `agent_feed`      : [{kind, label, detail, when}, ...] (oldest→newest)
+    `agent_feed_count`: row count
+    LIVE WORK TRANSCRIPT (from main._agent_runs_view_store):
+    `agent_runs`      : [{run_id, agent_display, handoff_short, status,
+                          status_label, started_ago, updated_ago, running, model,
+                          harness}, ...] newest-first (this agent's runs)
+    `agent_run_count`, `agent_run_running`, `agent_run_no_orch`
+    `agent_run_selected` : {run_id, agent_display, handoff_id, handoff_short,
+                          model, harness, status, status_label, error,
+                          started_ago, updated_ago, ended_ago, running, truncated,
+                          chars, segments:[{kind,text}], body} | None
+    `agent_run_selected_id`, `agent_run_active`
+#}
+{% set is_cpo = agent.interactive %}
+
+{# ---------- 1 · HEADER ---------- #}
+<div class="ad-head">
+  {#
+    Back to the Dashboard center. Swaps #center-region back to the live
+    dashboard for this project; the client clears the col-2 agent highlight on
+    the data-selected-agent="" marker (see console.html syncAgent()).
+  #}
+  <button
+    type="button"
+    class="ad-back"
+    hx-get="/views/dashboard?project={{ selected_key }}"
+    hx-target="#center-region"
+    hx-swap="innerHTML"
+    title="Back to the Dashboard"
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+    Dashboard
+  </button>
+
+  <div class="ad-id">
+    <div class="ad-av {{ 'det' if not is_cpo else '' }}">
+      {{ agent.initials }}
+      <span class="live {{ 'run' if is_cpo else 'idle' }}" aria-hidden="true"></span>
+    </div>
+    <div class="ad-meta">
+      <div class="nm">
+        <span>{{ agent.display_name }}</span>
+        <span class="hex">{{ agent_compound }}</span>
+        <span class="ad-type {{ 'det' if is_cpo else '' }}">{{ agent.role }}</span>
+        {% if agent.cpo_tag %}<span class="cpo-tag" title="Interactive lead — the agent you talk to">Lead</span>{% endif %}
+        {% if agent.is_test %}<span class="test-tag" title="name matches a test/pollution pattern (hint, not authority)">test?</span>{% endif %}
+      </div>
+      {#
+        INLINE-EDITABLE harness · model · reasoning (the CTO's original spec) —
+        the three fields render as subtle inline <select> dropdowns pre-set to the
+        agent's EFFECTIVE config, each POSTing a change to the SAME console
+        agent_overrides as Settings → Configure. Factored into its own partial so
+        the POST /agents/{project}/{agent}/config endpoint can swap JUST this line.
+      #}
+      {% include "_agent_detail_config.html" %}
+    </div>
+  </div>
+
+  <div class="ad-head-r">
+    {#
+      Token USAGE (not budget). Parsed from the agent's most recent history
+      token_count frame (main._token_usage); when no usable frame exists we
+      show a labeled "usage · n/a" placeholder.
+    #}
+    {% if agent_usage %}
+    <div class="ad-tokens" title="Tokens used by this agent (most recent run · input {{ agent_usage.input or 0 }} · output {{ agent_usage.output or 0 }}{% if agent_usage.cached %} · cached {{ agent_usage.cached }}{% endif %})">
+      <svg class="tk-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2M9 20h6M12 4v16"/></svg>
+      <span class="tl">Tokens used</span>
+      <span class="tv">{{ agent_usage.total_h }}</span>
+    </div>
+    {% else %}
+    <div class="ad-tokens is-na" title="token usage not exposed for this agent yet">
+      <svg class="tk-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2M9 20h6M12 4v16"/></svg>
+      <span class="tl">Usage</span>
+      <span class="tv">n/a</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ---------- 2 · LIVE WORK TRANSCRIPT + 3 · activity timeline + 4 · composer ---------- #}
+<div class="ad-scroll">
+  <div class="ad-inner">
+
+    {#
+      ---------- 2 · LIVE WORK TRANSCRIPT (the prominent main content) ----------
+      THIS agent's runs from the durable RunState SSOT store. The selected run's
+      streamed output renders below; a compact strip lists the agent's other recent
+      runs (click to pin one — its transcript swaps into #ad-tx-panel without a full
+      re-render). While a run is live the pane is pushed by the T8 /runstate/stream
+      SSE channel (no poll) so the transcript fills in as the agent works.
+    #}
+    <div class="ad-sec-h">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      Live work
+      {% if agent_run_running %}<span class="ad-tx-livedot" title="{{ agent_run_running }} run(s) streaming now" aria-hidden="true"></span><span class="ct ad-tx-livect">{{ agent_run_running }} running</span>
+      {% elif agent_run_count %}<span class="ct">{{ agent_run_count }} run{{ '' if agent_run_count == 1 else 's' }}</span>{% endif %}
+      <span class="rule" aria-hidden="true"></span>
+    </div>
+
+    {#
+      Stable run-region wrapper (Milestone 1 T8). The /runstate/stream EventSource
+      re-reads the durable RunState SSOT and swaps #ad-tx-panel (or, on the first
+      run for a never-run agent, this whole region) live — so a running run's
+      transcript fills in with NO poll. The wrapper id is the guaranteed swap target
+      regardless of which empty/run branch first rendered.
+    #}
+    <div id="ad-tx-region">
+    {% if agent_run_no_orch %}
+    {# The orchestrator loop didn't start → no transcript store to read. #}
+    <div class="ad-idle-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+      <span>The crew loop isn't running, so no live run transcript is captured. The console is running without the autonomous orchestrator — you can still chat with <b>{{ agent.display_name }}</b> below.</span>
+    </div>
+    {% elif agent_run_selected or agent_runs %}
+    {# Recent-run strip (only when there's more than one run for this agent). #}
+    {% if agent_run_count > 1 %}
+    <div class="ad-tx-runs" role="tablist" aria-label="{{ agent.display_name }}'s recent runs">
+      {% for r in agent_runs %}
+      <a class="ad-tx-run st-{{ r.status }} {{ 'is-sel' if agent_run_selected and r.run_id == agent_run_selected.run_id else '' }}"
+         href="#"
+         hx-get="/agents/{{ selected_key }}/{{ agent.name }}?run={{ r.run_id }}"
+         hx-target="#center-region"
+         hx-swap="innerHTML"
+         title="{{ r.status_label }}{% if r.handoff_short %} · handoff {{ r.handoff_short }}{% endif %} · {{ r.updated_ago or r.started_ago }}">
+        <span class="ad-tx-run-dot st-{{ r.status }}" aria-hidden="true"></span>
+        <span class="ad-tx-run-st">{{ r.status_label }}</span>
+        {% if r.handoff_short %}<code class="ad-tx-run-hid">{{ r.handoff_short }}</code>{% endif %}
+        <span class="ad-tx-run-ago">{{ r.updated_ago or r.started_ago }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# The selected run's live transcript (reuses the /crew transcript markup + CSS). #}
+    <div class="ad-tx-panel" id="ad-tx-panel">
+      {% include "_agent_transcript.html" %}
+    </div>
+    {% else %}
+    {#
+      No runs captured for this agent AND (further down) no Cortex activity → the
+      clean empty state (NOT a dead "RECENT ACTIVITY 0").
+    #}
+    <div class="ad-idle-note ad-tx-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span>No runs captured yet for <b>{{ agent.display_name }}</b>. Dispatch this agent (chat below) or turn <b>project dispatch</b> ON to watch it work — its streamed output appears here live.</span>
+    </div>
+    {% endif %}
+    </div>{# /#ad-tx-region #}
+
+    {#
+      Live-push anchor for the agent transcript. data-runstate-url drives the T8
+      RunState SSOT EventSource (the durable-store live push, the SOLE live channel
+      now): on each `runstate` frame it swaps #ad-tx-panel (inside #ad-tx-region)
+      with the freshly re-read transcript partial. The old ~/.cortex-feed feed-file
+      EventSource (data-feed-url / /feed-stream) was removed at T12.
+    #}
+    <div class="cr-tx-body ad-tx-live" id="ad-tx-live"
+         data-runstate-url="/runstate/stream?project={{ selected_key }}&agent={{ agent.name }}{% if agent_run_selected_id %}&run={{ agent_run_selected_id }}{% endif %}"
+         aria-live="polite"></div>
+
+    {#
+      ---------- 3 · ACTIVITY TIMELINE ("what it has done") ----------
+      The agent's durable Cortex /history — decisions + tool-use, summarized
+      server-side. Shown beneath the live transcript as the standing record.
+    #}
+    <div class="ad-sec-h ad-sec-h-2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      Activity timeline
+      <span class="ct">{{ agent_feed_count }}</span>
+      <span class="rule" aria-hidden="true"></span>
+    </div>
+
+    {% if agent_feed %}
+    <div class="feed">
+      {% for row in agent_feed %}
+      <div class="fmsg {{ row.kind }}">
+        <span class="f-av" aria-hidden="true">
+          {% if row.kind == "tool" %}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          {% elif row.kind == "think" %}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2a7 7 0 0 0-4 12.7V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.3A7 7 0 0 0 12 2z"/><path d="M9 21h6"/></svg>
+          {% else %}{{ agent.initials }}{% endif %}
+        </span>
+        <span class="f-body">
+          <span class="f-head">
+            <span class="f-who">{{ agent.display_name }}</span>
+            {% if row.when %}<span class="f-time">{{ row.when }}</span>{% endif %}
+          </span>
+          <span class="f-text">{{ row.label }}</span>
+          {% if row.detail %}<code class="f-detail">{{ row.detail }}</code>{% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="ad-idle-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+      <span>No durable activity captured for <b>{{ agent.display_name }}</b> in the live history window yet. Decisions and tool-use this agent logs to Cortex appear here.</span>
+    </div>
+    {% endif %}
+
+    {#
+      LIVE chat feed (R2b). Empty on first paint; the composer appends a user
+      bubble + a streaming agent bubble here as the harness replies. Sits BELOW
+      the server-rendered recent-activity feed so the conversation reads
+      top→bottom (history, then this session's turns).
+    #}
+    <div class="feed live-chat" id="ad-feed"
+         data-agent="{{ agent.name }}"
+         data-display="{{ agent.display_name }}"
+         data-initials="{{ agent.initials }}"
+         data-chat-url="/agents/{{ selected_key }}/{{ agent.name }}/chat"></div>
+
+    {# spacer pushes a short feed up so the composer hangs naturally #}
+    <div class="stream-spacer"></div>
+
+    {# ---------- 3 · HANGING composer (LIVE harness chat · R2b) ---------- #}
+    {#
+      R2b: SEND posts the message to POST /agents/{project}/{agent}/chat, which
+      spawns the agent's RESOLVED harness (override-first via _chat_routing_for —
+      claude-code/codex/pi real) on the user's SUBSCRIPTION
+      and streams the reply back as SSE. composerSend() (below) appends the user
+      bubble + a streaming agent bubble and consumes the SSE stream via
+      fetch()+ReadableStream — no HTMX SSE extension needed, and main.py stays
+      shell-agnostic.
+      TODO(R2b-attach): image paste / file attach is still UI-only.
+    #}
+    <form class="composer" onsubmit="return composerSend(this);">
+      <div class="composer-inner">
+        <div class="composer-box">
+          {# attached-image chips (paste / attach state) — still UI-only #}
+          <div class="composer-atts" id="composer-atts"></div>
+          <textarea
+            class="composer-ta"
+            name="message"
+            rows="3"
+            oninput="composerGrow(this)"
+            onkeydown="composerKey(event, this)"
+            placeholder="Talk to {{ agent.display_name }} — set a goal, ask a question, or steer the work…&#10;⌘↵ to send."
+          ></textarea>
+          <div class="composer-bar">
+            <button type="button" class="att-btn" title="Attach file / paste image (follow-up)" aria-label="Attach">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.05 12.2 20.2a5 5 0 0 1-7.1-7.1l9.2-9.2a3.33 3.33 0 0 1 4.7 4.7l-9.2 9.2a1.67 1.67 0 0 1-2.35-2.35l8.5-8.5"/></svg>
+            </button>
+            <span class="paste-hint">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
+              live · {{ agent.harness }}
+            </span>
+            <span class="scope">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+              {{ agent_compound }}
+            </span>
+            <button type="submit" class="send">Send <kbd>⌘↵</kbd></button>
+          </div>
+        </div>
+        {# inline error/status notice — shown on a harness/auth error #}
+        <div class="composer-notice" id="composer-notice" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+          <span id="composer-notice-text"></span>
+        </div>
+        <div class="composer-hint">
+          You talk to <strong>{{ agent.display_name }}</strong> here — messages run live through the <strong>{{ agent.harness }}</strong> subscription harness and stream back above.
+        </div>
+      </div>
+    </form>
+
+  </div>
+</div>
+
+{#
+  INLINE HEADER CONFIG (harness · model · reasoning) — client-side dropdown
+  repopulation. Same static harness→{models,reasoning}+catalog map the Configure
+  card uses (app.harness.harness_js_map): when the header HARNESS <select> changes
+  we rebuild the MODEL + REASONING options with NO server round-trip, then the
+  <select>'s own hx-post saves + swaps the sub-line back. Defined as window.* so
+  the inline onchange resolves even after an HTMX swap re-runs this partial.
+#}
+<script id="ad-harness-map" type="application/json">{{ ad_harness_map | safe }}</script>
+<script>
+  (function () {
+    var raw = document.getElementById("ad-harness-map");
+    if (!raw) return;
+    var MAP;
+    try { MAP = JSON.parse(raw.textContent || "{}"); } catch (e) { MAP = { harnesses: {}, catalog: [] }; }
+
+    // Called from the header harness <select>'s onchange BEFORE its hx-post fires
+    // (htmx change trigger), so the saved override reflects the repopulated model.
+    window.adOnHarnessChange = function (sel) {
+      var harness = sel.value;
+      var root = sel.closest(".ad-cfg-sub");
+      if (!root) return;
+      var spec = (MAP.harnesses || {})[harness];
+      if (!spec) return; // unknown harness → leave existing options
+
+      var modelSel = root.querySelector('select[data-role="model"]');
+      var reasonSel = root.querySelector('select[data-role="reasoning"]');
+
+      if (modelSel) {
+        var prev = modelSel.value;
+        adRebuildModel(modelSel, spec, MAP.catalog || []);
+        adRestoreSelection(modelSel, prev);
+      }
+      if (reasonSel) {
+        var prevR = reasonSel.value;
+        adRebuildOptions(reasonSel, (spec.reasoning || []).map(function (v) {
+          return { value: v, label: v };
+        }));
+        adRestoreSelection(reasonSel, prevR);
+      }
+    };
+
+    // Replace a <select>'s options with a flat [{value,label}] list.
+    function adRebuildOptions(sel, options) {
+      sel.replaceChildren();
+      options.forEach(function (o) {
+        var opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        sel.appendChild(opt);
+      });
+    }
+
+    // Rebuild a MODEL <select>: fixed list (flat) or catalog (grouped optgroups).
+    function adRebuildModel(sel, spec, catalog) {
+      sel.replaceChildren();
+      if (spec.model_source === "catalog") {
+        catalog.forEach(function (g) {
+          var og = document.createElement("optgroup");
+          og.label = g.label || g.provider || "";
+          (g.models || []).forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m.value;
+            opt.textContent = m.label;
+            og.appendChild(opt);
+          });
+          if (og.children.length) sel.appendChild(og);
+        });
+        if (!sel.children.length) {
+          var hint = document.createElement("option");
+          hint.value = "";
+          hint.textContent = "— configure a provider key in Settings —";
+          sel.appendChild(hint);
+        }
+      } else {
+        (spec.models || []).forEach(function (m) {
+          var opt = document.createElement("option");
+          opt.value = m.value;
+          opt.textContent = m.label;
+          sel.appendChild(opt);
+        });
+      }
+    }
+
+    // If `value` is still one of the select's options, re-select it.
+    function adRestoreSelection(sel, value) {
+      if (!value) return;
+      var opts = sel.querySelectorAll("option");
+      for (var i = 0; i < opts.length; i++) {
+        if (opts[i].value === value) { sel.value = value; return; }
+      }
+    }
+  })();
+</script>
+
+<script>
+  // Auto-grow the composer textarea up to its CSS max-height, then scroll.
+  function composerGrow(ta) {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 320) + "px";
+  }
+  // ⌘↵ / Ctrl+↵ submits the composer (newline otherwise).
+  function composerKey(ev, ta) {
+    if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault();
+      var form = ta.closest("form");
+      if (form) composerSend(form);
+    }
+  }
+
+  // ---- live-chat feed helpers (R2b) ----
+  function adFeed() { return document.getElementById("ad-feed"); }
+  function adScroll() { var f = adFeed(); return f ? f.closest(".ad-scroll") : null; }
+  function adScrollToEnd() {
+    var s = adScroll();
+    if (s) s.scrollTop = s.scrollHeight;
+  }
+  // Append a feed bubble; returns the .f-text node so a streaming reply can grow it.
+  function adAppendBubble(kind, who, text) {
+    var feed = adFeed();
+    if (!feed) return null;
+    var row = document.createElement("div");
+    row.className = "fmsg " + kind;
+    var av = document.createElement("span");
+    av.className = "f-av";
+    av.setAttribute("aria-hidden", "true");
+    av.textContent = (kind === "say-user") ? "you" : (feed.dataset.initials || "··");
+    var body = document.createElement("span");
+    body.className = "f-body";
+    var head = document.createElement("span");
+    head.className = "f-head";
+    var whoEl = document.createElement("span");
+    whoEl.className = "f-who";
+    whoEl.textContent = who;
+    head.appendChild(whoEl);
+    var textEl = document.createElement("span");
+    textEl.className = "f-text";
+    textEl.textContent = text || "";
+    body.appendChild(head);
+    body.appendChild(textEl);
+    row.appendChild(av);
+    row.appendChild(body);
+    feed.appendChild(row);
+    adScrollToEnd();
+    return textEl;
+  }
+  function composerNotice(msg) {
+    var n = document.getElementById("composer-notice");
+    var t = document.getElementById("composer-notice-text");
+    if (t) t.textContent = msg;
+    if (n) n.hidden = false;
+  }
+  function composerClearNotice() {
+    var n = document.getElementById("composer-notice");
+    if (n) n.hidden = true;
+  }
+
+  // LIVE SEND (R2b): POST the message, stream the SSE reply into the feed.
+  // Uses fetch()+ReadableStream to parse the text/event-stream (no EventSource
+  // so we can POST a body, and no HTMX SSE extension dependency).
+  async function composerSend(form) {
+    var ta = form.querySelector(".composer-ta");
+    var feed = adFeed();
+    if (!ta || !feed) return false;
+    var msg = (ta.value || "").trim();
+    if (!msg) return false;
+
+    composerClearNotice();
+    var sendBtn = form.querySelector(".send");
+    if (sendBtn) sendBtn.disabled = true;
+
+    // user bubble + reset the composer
+    adAppendBubble("say say-user", "You", msg);
+    ta.value = "";
+    composerGrow(ta);
+
+    // streaming agent bubble (grows as deltas arrive)
+    var replyEl = adAppendBubble("say", feed.dataset.display || "Agent", "");
+    var assembled = "";
+    var gotText = false;
+    var resultText = "";
+
+    try {
+      var resp = await fetch(feed.dataset.chatUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "text/event-stream",
+        },
+        body: "message=" + encodeURIComponent(msg),
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error("chat request failed (" + resp.status + ")");
+      }
+
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      // Parse SSE frames: blocks separated by a blank line; each block has
+      // `event:` and `data:` lines.
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var parts = buf.split("\n\n");
+        buf = parts.pop();  // keep the trailing partial frame
+        for (var i = 0; i < parts.length; i++) {
+          var frame = parts[i];
+          if (!frame.trim()) continue;
+          var ev = "message", data = "";
+          var lines = frame.split("\n");
+          for (var j = 0; j < lines.length; j++) {
+            var ln = lines[j];
+            if (ln.indexOf("event:") === 0) ev = ln.slice(6).trim();
+            else if (ln.indexOf("data:") === 0) data += ln.slice(5).trim();
+          }
+          var payload = {};
+          try { payload = data ? JSON.parse(data) : {}; } catch (e) { payload = {}; }
+
+          if (ev === "delta") {
+            assembled += (payload.text || "");
+            gotText = true;
+            replyEl.textContent = assembled;
+            adScrollToEnd();
+          } else if (ev === "result") {
+            resultText = payload.text || "";
+          } else if (ev === "error") {
+            composerNotice(payload.message || "The harness reported an error.");
+          } else if (ev === "done") {
+            // stream finished
+          }
+        }
+      }
+
+      // If only a final result frame arrived (no streamed deltas), show it.
+      if (!gotText && resultText) {
+        replyEl.textContent = resultText;
+      }
+      // Drop the empty placeholder bubble if nothing came back at all.
+      if (!gotText && !resultText) {
+        var emptyRow = replyEl.closest(".fmsg");
+        if (emptyRow) emptyRow.remove();
+      }
+    } catch (err) {
+      composerNotice("Could not reach the harness: " + (err && err.message ? err.message : err));
+      var failRow = replyEl ? replyEl.closest(".fmsg") : null;
+      if (failRow) failRow.remove();
+    } finally {
+      if (sendBtn) sendBtn.disabled = false;
+      adScrollToEnd();
+    }
+    return false; // never let the browser navigate
+  }
+</script>
+
+<script>
+  // ---- RunState SSOT EventSource (Milestone 1 T8) — durable-store live push ----
+  // Replaces the agent-detail pane's poll: a NOTIFY off the store's run_state_events
+  // bus wakes GET /runstate/stream, which RE-READS the SAME T7 read model the HTTP
+  // first-paint used and pushes it back. Each `runstate` frame carries the freshly
+  // rendered transcript partial (#ad-tx-panel markup); we swap it into the live DOM
+  // so a running run's transcript fills in with NO poll — and, because the push and
+  // the first paint render from the identical model, they can't disagree.
+  //
+  // TRUST BOUNDARY: the swapped html is OUR OWN server-side Jinja render of
+  // _agent_transcript.html (autoescape on — every dynamic value is HTML-escaped at
+  // render time, no `| safe`). It is first-party, pre-escaped markup — the exact
+  // same trust model as the HTMX `hx-swap="innerHTML"` swaps this whole console is
+  // built on (e.g. the #center-region swap). No untrusted/user HTML is injected.
+  //
+  // Lifecycle: the ref lives on window.* so the NEXT pane render closes any leftover
+  // before opening its own, and an htmx:beforeSwap on #center-region tears it down on
+  // agent switch (no leak).
+  (function () {
+    // Close any RunState EventSource left over from the previous agent pane.
+    if (window._adRunstateES) {
+      try { window._adRunstateES.close(); } catch (e) {}
+      window._adRunstateES = null;
+    }
+
+    var anchor = document.getElementById("ad-tx-live");
+    if (!anchor) return;
+    var runstateUrl = anchor.dataset.runstateUrl;
+    if (!runstateUrl) return;
+
+    // The outer scroller for the whole pane (sticky-scroll target).
+    function adRunstateScroll() { return anchor.closest(".ad-scroll") || anchor; }
+
+    // Swap the live transcript region from a freshly re-read read model. Prefers
+    // swapping JUST #ad-tx-panel (the selected run's transcript) in place; if the
+    // pane first rendered the empty/no-run state (no #ad-tx-panel yet), drop the
+    // rendered partial into the stable #ad-tx-region wrapper so the first run for a
+    // never-run agent appears live too. Sticky-scroll: only pin to the bottom when
+    // the operator was already at the bottom (don't yank them up mid-scroll).
+    function applyRunstate(html) {
+      if (html == null) return;
+      var scroller = adRunstateScroll();
+      var atBottom =
+        (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) < 60;
+
+      // First-party, server-pre-escaped partial (see TRUST BOUNDARY above).
+      var panel = document.getElementById("ad-tx-panel");
+      if (panel) {
+        // The frame's html IS the _agent_transcript.html partial (the panel's
+        // inner markup) — swap the panel's contents in place.
+        panel.innerHTML = html;  // first-party server-rendered, autoescaped markup
+      } else {
+        var region = document.getElementById("ad-tx-region");
+        if (!region) return;
+        // First run for a never-run agent: replace the empty-state region with a
+        // wrapped panel so subsequent frames find #ad-tx-panel to swap in place.
+        region.innerHTML =  // first-party server-rendered, autoescaped markup
+          '<div class="ad-tx-panel" id="ad-tx-panel">' + html + '</div>';
+      }
+
+      if (atBottom) scroller.scrollTop = scroller.scrollHeight;
+    }
+
+    var es = new EventSource(runstateUrl);
+    window._adRunstateES = es;
+
+    es.addEventListener("runstate", function (e) {
+      var payload;
+      try { payload = JSON.parse(e.data); } catch (err) { return; }
+      if (payload && typeof payload.html === "string") {
+        applyRunstate(payload.html);
+      }
+    });
+
+    es.onerror = function () {
+      // The browser auto-retries on a transient drop; the server graceful-degrades
+      // (a down store just yields no frames). Nothing to do here.
+    };
+
+    // Tear down on pane swap (htmx removes the DOM node on agent switch).
+    document.addEventListener("htmx:beforeSwap", function cleanup(evt) {
+      if (evt.detail && evt.detail.target && evt.detail.target.id === "center-region") {
+        document.removeEventListener("htmx:beforeSwap", cleanup);
+        if (window._adRunstateES) {
+          try { window._adRunstateES.close(); } catch (e) {}
+          window._adRunstateES = null;
+        }
+      }
+    });
+  })();
+</script>

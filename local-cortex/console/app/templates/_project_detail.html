@@ -1,0 +1,184 @@
+{#
+  PER-PROJECT DRILL-IN (center detail view). The click-IN from the all-projects
+  Dashboard — the Dashboard shows only COUNTS; this opens ONE project's full
+  open-handoffs + tasks LISTS, which the Dashboard lacks.
+
+  Reached via GET /projects/{key}/detail (concrete-resource pattern) from a
+  dashboard card's 'details' affordance OR the col-2 Metrics 'details ›' link.
+  The Dashboard itself is left as-is. A "Dashboard" back button returns the
+  center to the cross-project fleet (same hx-get the agent-detail back button
+  uses). On-demand pane — no background poll; a Refresh button re-reads.
+
+  Context (built in main._project_detail_context):
+    selected_key        : project key
+    pd_project_name     : display name
+    pd_repo_root        : canonical working folder
+    pd_handoffs         : [{compound, summary, summary_full, from_agent,
+                            to_target, priority, status, claimed_by, created_at}]
+                          OPEN handoffs, urgent-major then newest-first
+    pd_handoff_count    : open-handoff count
+    pd_tasks            : [{title, assigned, status, priority, is_active}]
+                          active-first then priority desc
+    pd_task_count       : task count
+    pd_active_tasks / pd_pending_handoffs / pd_events_24h : header vitals (/state)
+    pd_unknown          : True if the project key wasn't found (still renders)
+#}
+<div class="pdtl-wrap">
+
+  {# ---------- page head ---------- #}
+  <div class="pdtl-head">
+    <button
+      type="button"
+      class="pdtl-back"
+      hx-get="/views/dashboard?project={{ selected_key }}"
+      hx-target="#center-region"
+      hx-swap="innerHTML"
+      title="Back to the all-projects Dashboard"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+      Dashboard
+    </button>
+
+    <div class="pdtl-id">
+      <span class="pdtl-tic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      </span>
+      <div class="pdtl-meta">
+        <div class="pdtl-name">{{ pd_project_name }}</div>
+        <div class="pdtl-sub">
+          <code class="pdtl-key">{{ selected_key }}</code>
+          {% if pd_repo_root %}
+          <span class="pdtl-sep" aria-hidden="true">·</span>
+          <span class="pdtl-root" title="canonical working folder (repo_root)">{{ pd_repo_root }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="pdtl-head-r">
+      <button
+        type="button"
+        class="pdtl-refresh"
+        hx-get="/projects/{{ selected_key }}/detail"
+        hx-target="#center-region"
+        hx-swap="innerHTML"
+        title="Re-read this project's handoffs + tasks"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  {% if pd_unknown %}
+  <div class="cx-note err pdtl-unknown">Project <code>{{ selected_key }}</code> wasn't found among active projects. It may be inactive or renamed.</div>
+  {% endif %}
+
+  {# ---------- header vitals strip (the /state counters) ---------- #}
+  <div class="pdtl-vitals">
+    <div class="pdtl-vital">
+      <span class="pdtl-v-n">{{ pd_handoff_count }}</span>
+      <span class="pdtl-v-l">open handoffs</span>
+    </div>
+    <div class="pdtl-vital">
+      <span class="pdtl-v-n">{{ pd_task_count }}</span>
+      <span class="pdtl-v-l">tasks</span>
+    </div>
+    <div class="pdtl-vital">
+      <span class="pdtl-v-n">{{ pd_active_tasks if pd_active_tasks is not none else "—" }}</span>
+      <span class="pdtl-v-l">active</span>
+    </div>
+    <div class="pdtl-vital">
+      <span class="pdtl-v-n">{{ pd_events_24h if pd_events_24h is not none else "—" }}</span>
+      <span class="pdtl-v-l">events · 24h</span>
+    </div>
+  </div>
+
+  <div class="pdtl-cols">
+
+    {# ================= open handoffs ================= #}
+    <section class="pdtl-block">
+      <div class="pdtl-sec-h">
+        <span class="pdtl-sec-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9.5L21 9.5V15a2 2 0 0 1-2 2h-4M9 17l3 3 3-3M12 12v8"/></svg>
+        </span>
+        <h2 class="pdtl-sec-t">Open handoffs</h2>
+        <span class="pdtl-sec-n">{{ pd_handoff_count }}</span>
+      </div>
+
+      {% if pd_handoffs %}
+      <ul class="pdtl-list pdtl-handoffs">
+        {% for h in pd_handoffs %}
+        <li class="pdtl-ho pri-{{ h.priority }}">
+          <div class="pdtl-ho-top">
+            <span class="pdtl-pri pri-{{ h.priority }}" title="priority">{{ h.priority }}</span>
+            <span class="pdtl-status st-{{ h.status }}" title="status">{{ h.status }}{% if h.claimed_by %} · {{ h.claimed_by }}{% endif %}</span>
+            <code class="pdtl-hid" title="handoff {{ h.compound }}">{{ h.compound }}</code>
+          </div>
+          <div class="pdtl-ho-summary" title="{{ h.summary_full }}">{{ h.summary }}</div>
+          <div class="pdtl-ho-meta">
+            <span class="pdtl-ho-from">from <b>{{ h.from_agent }}</b></span>
+            <span class="pdtl-arrow" aria-hidden="true">→</span>
+            <span class="pdtl-ho-to">to <b>{{ h.to_target }}</b></span>
+            {% if h.created_at %}
+            <span class="pdtl-sep" aria-hidden="true">·</span>
+            <span class="pdtl-ho-when" title="created">{{ h.created_at }}</span>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="pdtl-empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        <div class="pdtl-empty-t">No open handoffs</div>
+        <p class="pdtl-empty-s">Nothing is waiting on <b>{{ pd_project_name }}</b> right now.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    {# ================= tasks ================= #}
+    <section class="pdtl-block">
+      <div class="pdtl-sec-h">
+        <span class="pdtl-sec-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </span>
+        <h2 class="pdtl-sec-t">Tasks</h2>
+        <span class="pdtl-sec-n">{{ pd_task_count }}</span>
+      </div>
+
+      {% if pd_tasks %}
+      <ul class="pdtl-list pdtl-tasks">
+        {% for t in pd_tasks %}
+        <li class="pdtl-task {{ 'is-active' if t.is_active else '' }}">
+          <span class="pdtl-task-dot st-{{ t.status }}" aria-hidden="true"></span>
+          <div class="pdtl-task-body">
+            <div class="pdtl-task-title" title="{{ t.title }}">{{ t.title }}</div>
+            <div class="pdtl-task-meta">
+              <span class="pdtl-task-assigned" title="assigned agent">{{ t.assigned }}</span>
+              <span class="pdtl-sep" aria-hidden="true">·</span>
+              <span class="pdtl-task-status st-{{ t.status }}">{{ t.status }}</span>
+              {% if t.priority is not none %}
+              <span class="pdtl-sep" aria-hidden="true">·</span>
+              <span class="pdtl-task-pri" title="priority">P{{ t.priority }}</span>
+              {% endif %}
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="pdtl-empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 10h8M8 14h5"/></svg>
+        <div class="pdtl-empty-t">No tasks on the board</div>
+        <p class="pdtl-empty-s"><b>{{ pd_project_name }}</b> has no board tasks right now.</p>
+      </div>
+      {% endif %}
+    </section>
+
+  </div>
+
+  <p class="pdtl-foot-note">
+    Drill-in of <b>{{ pd_project_name }}</b>'s live Cortex queue — open handoffs + board tasks. The all-projects Dashboard shows the cross-project counts; this is the click-in for the full lists. Read-only.
+  </p>
+</div>

@@ -1,0 +1,627 @@
+{#
+  R7 · GRAPH center view (live) — INTERACTIVE node-edge graph.
+
+  The Cortex knowledge / code graph rendered as an actual interactive
+  NODE-EDGE graph (cytoscape.js, vendored at /static/cytoscape.min.js — no CDN),
+  not just lists. Entities are nodes (coloured by kind via the node-kind
+  palette), relationships are edges. Pan/zoom; click a node to focus + highlight
+  its neighbours and populate the inspector; double-click re-centres the search
+  on that node. The graph is BOUNDED server-side (main._graph_elements): the
+  search hits + their 1-hop neighbours, capped at _GRAPH_NODE_CAP (~140) nodes —
+  the Kaidera OS graph is ~5,868 nodes / 44k edges, so we never ship the whole
+  thing to the browser. A "showing N of M" note makes the bound explicit.
+
+  Data: nodes/edges from /cortex-graph-search (entities + one-hop relationships),
+  headline counts from /graph/stats. The search box drives it — a term re-centres
+  the graph on the matching entities + neighbours. Default (no term) seeds a
+  project-flavoured catch-all so the canvas isn't empty.
+
+  The entity + relationship LISTS are kept (collapsible side panel, "Lists"
+  toggle) — the visual graph is primary but the verbatim rows stay reachable.
+  The graph data may be thin/stale (the graph_rebuild cron has been flaky), so a
+  clear "graph data may be stale" note always shows.
+
+  Context (built in main._graph_view):
+    `selected`, `selected_key`         : project record + key (header)
+    `gr_term`                          : current entity-search term ("" = seed)
+    `gr_own_nodes/_edges`              : this project's code-graph repo stats
+    `gr_total_nodes/_edges`            : cross-repo totals (context)
+    `gr_repo_count`                    : code-graph repo count
+    `gr_elements_json`                 : cytoscape elements (nodes+edges) JSON
+    `gr_graph_nodes/_edges`            : RENDERED node/edge counts (bounded)
+    `gr_graph_total_nodes`             : M for the "showing N of M" note
+    `gr_node_cap`, `gr_graph_capped`   : the cap + whether it clipped
+    `gr_entities` + `gr_entity_count`  : side-panel entity list
+    `gr_relationships` + `gr_rel_count`: side-panel relationship list
+    `gr_kind_counts`                   : {code, mem, work} tallies (legend)
+    `gr_admin_reachable`               : was /admin/cortex/entities reachable?
+    `gr_entity_source`                 : "admin-l4" | "graph-search"
+#}
+{% if selected %}
+<div class="center on" data-active-view="graph">
+  <div class="gr-wrap">
+
+    {# ---------- header ---------- #}
+    <div class="gr-head">
+      <div class="gr-title-wrap">
+        <span class="gr-tic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="9" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8 7.3l8 1.2M8.2 16.2l1-7M15.6 11l-5.4 5"/></svg>
+        </span>
+        <div>
+          <div class="gr-title">Knowledge graph</div>
+          <div class="gr-sub">
+            <span>{{ selected.display_name or selected.project_key }}</span>
+            <span class="gr-sep" aria-hidden="true">·</span>
+            <span>L3 code graph + L4 entities</span>
+          </div>
+        </div>
+      </div>
+      <div class="gr-head-r">
+        {# in-view entity search — reloads the graph view for this project + term #}
+        <form
+          class="gr-search"
+          hx-get="/views/graph"
+          hx-target="#center-region"
+          hx-swap="innerHTML"
+          hx-trigger="submit"
+        >
+          <input type="hidden" name="project" value="{{ selected_key }}" />
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input
+            type="text"
+            name="q"
+            value="{{ gr_term }}"
+            placeholder="Search entities, files, concepts…"
+            autocomplete="off"
+            aria-label="Search the knowledge graph"
+          />
+          <button type="submit" class="gr-search-go">Search</button>
+        </form>
+        <button
+          type="button"
+          class="gr-lists-toggle"
+          id="gr-lists-toggle"
+          aria-pressed="false"
+          title="Toggle the entity + relationship lists"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          Lists
+        </button>
+      </div>
+    </div>
+
+    {# ---------- stale-data note (graph_rebuild cron has been flaky) ---------- #}
+    <div class="gr-stale">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <span>Graph data may be <b>stale</b> — the <code>graph_rebuild</code> cron has been failing, so node/edge counts and entities can lag the live state.</span>
+    </div>
+
+    {# ---------- stats strip ---------- #}
+    <div class="gr-stats">
+      <div class="gr-stat">
+        <div class="gr-stat-v">{{ "{:,}".format(gr_own_nodes) if gr_own_nodes is not none else "—" }}</div>
+        <div class="gr-stat-l">Nodes · {{ selected_key }}</div>
+      </div>
+      <div class="gr-stat">
+        <div class="gr-stat-v">{{ "{:,}".format(gr_own_edges) if gr_own_edges is not none else "—" }}</div>
+        <div class="gr-stat-l">Edges · {{ selected_key }}</div>
+      </div>
+      <div class="gr-stat">
+        <div class="gr-stat-v">{{ "{:,}".format(gr_total_nodes) if gr_total_nodes is not none else "—" }}</div>
+        <div class="gr-stat-l">Nodes · all repos</div>
+      </div>
+      <div class="gr-stat">
+        <div class="gr-stat-v">{{ "{:,}".format(gr_total_edges) if gr_total_edges is not none else "—" }}</div>
+        <div class="gr-stat-l">Edges · all repos</div>
+      </div>
+      <div class="gr-stat">
+        <div class="gr-stat-v">{{ gr_repo_count }}</div>
+        <div class="gr-stat-l">Code-graph repos</div>
+      </div>
+    </div>
+
+    {# ---------- node-kind legend (over the RENDERED nodes) ---------- #}
+    <div class="gr-legend">
+      <span class="gr-leg"><i class="gr-sw k-code"></i> Code &amp; files <b>{{ gr_kind_counts.code }}</b> <span class="gr-leg-l">L3</span></span>
+      <span class="gr-leg"><i class="gr-sw k-mem"></i> Memory entities <b>{{ gr_kind_counts.mem }}</b> <span class="gr-leg-l">L4</span></span>
+      <span class="gr-leg"><i class="gr-sw k-work"></i> Work &amp; handoffs <b>{{ gr_kind_counts.work }}</b> <span class="gr-leg-l">L1</span></span>
+      <span class="gr-leg-spacer"></span>
+      <span class="gr-leg gr-leg-edge"><span class="gr-leg-line"></span> relationship edge</span>
+    </div>
+
+    {# ========================================================================
+       MAIN — the interactive node-edge graph canvas (cytoscape) + a
+       collapsible Lists side panel (entities + relationships).
+       ======================================================================== #}
+    <div class="gr-stage" id="gr-stage" data-lists="closed">
+
+      {# ----- the graph canvas ----- #}
+      <div class="gr-canvas-wrap">
+        <div class="gr-field" aria-hidden="true"></div>
+
+        {# elements payload: cytoscape JSON island the canvas JS reads #}
+        <script type="application/json" id="gr-graph-data">{{ gr_elements_json | safe }}</script>
+
+        {# the cytoscape mount #}
+        <div
+          class="gr-canvas"
+          id="gr-canvas"
+          data-node-count="{{ gr_graph_nodes }}"
+          data-term="{{ gr_term }}"
+          data-project="{{ selected_key }}"
+        ></div>
+
+        {# canvas toolbar (top-left): fit · re-layout #}
+        <div class="gr-tools">
+          <div class="gr-tool">
+            <button type="button" id="gr-fit" title="Fit graph to view">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+              Fit
+            </button>
+            <button type="button" id="gr-relayout" title="Re-run the layout">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>
+              Re-layout
+            </button>
+          </div>
+          <div class="gr-scope-pill">
+            <i class="gr-scope-dot" aria-hidden="true"></i>
+            <b>{{ selected_key }}</b>
+          </div>
+        </div>
+
+        {# "showing N of M" bound note (bottom-left) #}
+        <div class="gr-bound" id="gr-bound">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <span>
+            Showing <b>{{ gr_graph_nodes }}</b>{% if gr_graph_total_nodes is not none %} of <b>{{ "{:,}".format(gr_graph_total_nodes) }}</b>{% endif %} nodes
+            · <b>{{ gr_graph_edges }}</b> edges
+            {% if gr_graph_capped %}<span class="gr-bound-cut"> — capped at {{ gr_node_cap }}; search to explore</span>{% else %} — bounded neighbourhood; search to explore{% endif %}
+          </span>
+        </div>
+
+        {# zoom stack (bottom-right) #}
+        <div class="gr-zoom">
+          <button type="button" id="gr-zoom-in" title="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button type="button" id="gr-zoom-out" title="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        </div>
+
+        {# empty-state overlay (no nodes returned) #}
+        {% if gr_graph_nodes == 0 %}
+        <div class="gr-canvas-empty" id="gr-canvas-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="9" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8 7.3l8 1.2M8.2 16.2l1-7M15.6 11l-5.4 5"/></svg>
+          <p class="gr-canvas-empty-t">No graph for “{{ gr_term or 'this seed' }}”.</p>
+          <p class="gr-canvas-empty-s">No entities or relationships came back from <code>cortex-graph-search</code>. Try a different term, a file path, an entity name, or a handoff id.</p>
+        </div>
+        {% endif %}
+
+        {# node inspector (right, inside the canvas) — populated on node click #}
+        <aside class="gr-insp" id="gr-insp" hidden>
+          <button type="button" class="gr-insp-x" id="gr-insp-x" title="Close" aria-label="Close inspector">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+          <div class="gr-insp-kindline">
+            <span class="gr-insp-kchip" id="gr-insp-kchip"><i class="gr-insp-kd"></i><span id="gr-insp-ktext">—</span></span>
+          </div>
+          <div class="gr-insp-title" id="gr-insp-title">—</div>
+          <div class="gr-insp-desc" id="gr-insp-desc"></div>
+          <div class="gr-insp-sec">
+            <div class="gr-insp-h">Neighbours <span class="gr-insp-c" id="gr-insp-nbrcount">0</span></div>
+            <div class="gr-insp-nbrs" id="gr-insp-nbrs"></div>
+          </div>
+          <div class="gr-insp-foot">
+            <button type="button" class="gr-insp-recenter" id="gr-insp-recenter">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+              Re-centre search here
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {# ----- collapsible LISTS side panel (entities + relationships) ----- #}
+      <aside class="gr-side" id="gr-side" aria-hidden="true">
+        <div class="gr-side-head">
+          <span class="gr-side-t">Lists</span>
+          <button type="button" class="gr-side-x" id="gr-side-x" title="Hide lists" aria-label="Hide lists">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="gr-side-scroll">
+
+          {# ===== entities ===== #}
+          <div class="gr-card">
+            <div class="gr-card-h">
+              <span class="gr-card-t">Entities</span>
+              <span class="gr-card-s">
+                {{ gr_entity_count }} shown
+                {% if gr_term %}· “{{ gr_term }}”{% endif %}
+                · <span class="gr-srctag">{{ "L4 admin" if gr_entity_source == "admin-l4" else "graph-search" }}</span>
+              </span>
+            </div>
+            <div class="gr-card-b">
+              {% if gr_entities %}
+              <ul class="gr-entities">
+                {% for e in gr_entities %}
+                <li class="gr-ent" data-gr-focus="{{ e.name }}">
+                  <span class="gr-ent-kind k-{{ e.kind }}" title="{{ e.kind }}"></span>
+                  <span class="gr-ent-body">
+                    <span class="gr-ent-nm">{{ e.name }}</span>
+                    {% if e.desc %}<span class="gr-ent-desc">{{ e.desc }}</span>{% endif %}
+                  </span>
+                  <span class="gr-ent-type">{{ e.type }}</span>
+                </li>
+                {% endfor %}
+              </ul>
+              {% else %}
+              <p class="gr-empty">No entities returned for this query. Try a different term, a file path, or an entity name.</p>
+              {% endif %}
+            </div>
+          </div>
+
+          {# ===== relationships ===== #}
+          <div class="gr-card">
+            <div class="gr-card-h">
+              <span class="gr-card-t">Relationships</span>
+              <span class="gr-card-s">{{ gr_rel_count }} shown · one-hop</span>
+            </div>
+            <div class="gr-card-b">
+              {% if gr_relationships %}
+              <ul class="gr-rels">
+                {% for r in gr_relationships %}
+                <li class="gr-rel">
+                  <span class="gr-rel-node">
+                    <span class="gr-ent-kind k-{{ r.src_kind }}"></span>
+                    <span class="gr-rel-nm" title="{{ r.source }}">{{ r.source }}</span>
+                  </span>
+                  <span class="gr-rel-edge">
+                    <span class="gr-rel-arr" aria-hidden="true">→</span>
+                    <span class="gr-rel-kind">{{ r.rel }}</span>
+                  </span>
+                  <span class="gr-rel-node">
+                    <span class="gr-ent-kind k-{{ r.tgt_kind }}"></span>
+                    <span class="gr-rel-nm" title="{{ r.target }}">{{ r.target }}</span>
+                  </span>
+                </li>
+                {% endfor %}
+              </ul>
+              {% else %}
+              <p class="gr-empty">No relationships returned for this query (run an entity search to expand one-hop context).</p>
+              {% endif %}
+            </div>
+          </div>
+
+        </div>
+      </aside>
+
+    </div>
+
+    {# ---------- edge legend + provenance ---------- #}
+    <div class="gr-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <div>
+        Visual graph is a <b>bounded neighbourhood</b> — the search hits + their 1-hop neighbours (capped at {{ gr_node_cap }} nodes), not the whole {{ "{:,}".format(gr_graph_total_nodes) if gr_graph_total_nodes is not none else "full" }}-node graph. Nodes + edges from Cortex <b>/cortex-graph-search</b> (L3 + L4); headline counts from <b>/graph/stats</b>.
+        {% if not gr_admin_reachable %} The <b>L4 admin entity API</b> (<code>/admin/cortex/entities</code>) is token-gated and not reachable from this read-only console, so the graph-search entities stand in.{% endif %}
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // ===============================================================
+  //  R7 · GRAPH — interactive node-edge graph (cytoscape.js)
+  // ===============================================================
+  //
+  //  main.py stays shell-agnostic; all viz wiring is client-side here.
+  //  This IIFE runs on every HTMX swap of the graph center (inline scripts
+  //  in swapped fragments execute). It:
+  //    1. lazily loads /static/cytoscape.min.js once (vendored, no CDN),
+  //    2. reads the bounded elements JSON island the server emitted,
+  //    3. builds a force-directed (cose) node-edge graph coloured by kind,
+  //    4. wires pan/zoom, click-to-focus (+ neighbour highlight + inspector),
+  //       double-click / "re-centre" to re-run the search on that node, the
+  //       fit/re-layout/zoom toolbar buttons, the Lists toggle, and the
+  //       side-list "focus this node" rows.
+  //
+  //  Re-entrancy: a previous graph view's cytoscape instance is destroyed
+  //  before a new one builds (project switch / search re-runs this IIFE).
+
+  (function () {
+    var root = document.querySelector('.center[data-active-view="graph"]');
+    if (!root) return;
+    var mount = root.querySelector("#gr-canvas");
+    if (!mount) return;
+
+    // ---- node-kind palette (mirrors the .gr-wrap CSS custom props) ----
+    var KIND = {
+      code: { fill: "#E5E9FA", line: "#4F6BD8", text: "#2E45A6" },
+      mem:  { fill: "#D9F0ED", line: "#00A091", text: "#008F82" },
+      work: { fill: "#F4E8CF", line: "#C2871B", text: "#8A5E12" }
+    };
+    var ACCENT = "#00A091";
+    var EDGE_INK = "#B6C0CB";
+
+    // ---- read the bounded elements payload ----
+    var elements = [];
+    try {
+      var island = root.querySelector("#gr-graph-data");
+      if (island && island.textContent.trim()) {
+        elements = JSON.parse(island.textContent);
+      }
+    } catch (e) { elements = []; }
+
+    // ---- tear down any prior instance (project switch / re-search) ----
+    if (window.__grCy) {
+      try { window.__grCy.destroy(); } catch (e) { /* noop */ }
+      window.__grCy = null;
+    }
+
+    if (!elements.length) return; // empty-state overlay already shown server-side
+
+    // small helper: replace a node's children with safe DOM (no innerHTML).
+    function setMessage(container, titleText, subText) {
+      if (!container) return;
+      while (container.firstChild) container.removeChild(container.firstChild);
+      var wrap = document.createElement("div");
+      wrap.className = "gr-canvas-empty";
+      var t = document.createElement("p");
+      t.className = "gr-canvas-empty-t";
+      t.textContent = titleText;
+      var s = document.createElement("p");
+      s.className = "gr-canvas-empty-s";
+      s.textContent = subText;
+      wrap.appendChild(t);
+      wrap.appendChild(s);
+      container.appendChild(wrap);
+    }
+
+    // ---- lazy-load cytoscape once, then build ----
+    function withCytoscape(cb) {
+      if (window.cytoscape) { cb(); return; }
+      var existing = document.getElementById("gr-cytoscape-lib");
+      if (existing) {
+        // a load is already in flight (rapid re-swaps) — queue onto it
+        existing.addEventListener("load", cb);
+        return;
+      }
+      var s = document.createElement("script");
+      s.id = "gr-cytoscape-lib";
+      s.src = "/static/cytoscape.min.js";
+      s.onload = cb;
+      s.onerror = function () {
+        setMessage(
+          mount,
+          "Graph library failed to load.",
+          "The entity + relationship lists (Lists toggle) still work."
+        );
+      };
+      document.head.appendChild(s);
+    }
+
+    function build() {
+      var cytoscape = window.cytoscape;
+      if (!cytoscape) return;
+
+      var cy = cytoscape({
+        container: mount,
+        elements: elements,
+        minZoom: 0.15,
+        maxZoom: 3.5,
+        wheelSensitivity: 0.25,
+        boxSelectionEnabled: false,
+        style: [
+          {
+            selector: "node",
+            style: {
+              "background-color": function (n) { return (KIND[n.data("kind")] || KIND.mem).fill; },
+              "border-color": function (n) { return (KIND[n.data("kind")] || KIND.mem).line; },
+              "border-width": function (n) { return n.data("hit") ? 2 : 1.4; },
+              "width": function (n) { return n.data("hit") ? 26 : 16; },
+              "height": function (n) { return n.data("hit") ? 26 : 16; },
+              "label": "data(label)",
+              "font-size": function (n) { return n.data("hit") ? 9 : 8; },
+              "font-family": "ui-monospace, 'SF Mono', Menlo, monospace",
+              "color": "#0A1F2E",
+              "text-valign": "bottom",
+              "text-margin-y": 3,
+              "text-max-width": 110,
+              "text-wrap": "ellipsis",
+              "text-background-color": "#F8FAFB",
+              "text-background-opacity": 0.82,
+              "text-background-padding": 1.5,
+              "min-zoomed-font-size": 7,
+              "transition-property": "border-width, background-color, opacity",
+              "transition-duration": 120
+            }
+          },
+          {
+            selector: "edge",
+            style: {
+              "width": 1.2,
+              "line-color": EDGE_INK,
+              "curve-style": "bezier",
+              "opacity": 0.55,
+              "target-arrow-shape": "triangle",
+              "target-arrow-color": EDGE_INK,
+              "arrow-scale": 0.6
+            }
+          },
+          { selector: "node.faded", style: { "opacity": 0.18 } },
+          { selector: "edge.faded", style: { "opacity": 0.08 } },
+          {
+            selector: "node.sel",
+            style: {
+              "border-color": ACCENT,
+              "border-width": 3.5,
+              "background-color": function (n) { return (KIND[n.data("kind")] || KIND.mem).fill; }
+            }
+          },
+          { selector: "node.nbr", style: { "border-color": ACCENT, "border-width": 2.4 } },
+          { selector: "edge.hot", style: { "line-color": ACCENT, "target-arrow-color": ACCENT, "width": 2, "opacity": 1 } }
+        ],
+        layout: {
+          name: "cose",
+          animate: false,
+          fit: true,
+          padding: 36,
+          nodeRepulsion: 7000,
+          idealEdgeLength: 70,
+          nodeOverlap: 12,
+          gravity: 0.6,
+          numIter: 900,
+          componentSpacing: 90,
+          randomize: true
+        }
+      });
+      window.__grCy = cy;
+
+      // ---- inspector helpers ----
+      var insp = root.querySelector("#gr-insp");
+      var inspTitle = root.querySelector("#gr-insp-title");
+      var inspDesc = root.querySelector("#gr-insp-desc");
+      var inspKchip = root.querySelector("#gr-insp-kchip");
+      var inspKd = inspKchip ? inspKchip.querySelector(".gr-insp-kd") : null;
+      var inspKtext = root.querySelector("#gr-insp-ktext");
+      var inspNbrs = root.querySelector("#gr-insp-nbrs");
+      var inspNbrCount = root.querySelector("#gr-insp-nbrcount");
+      var selectedId = null;
+
+      function clearHi() {
+        cy.elements().removeClass("sel nbr hot faded");
+      }
+
+      function kindMeta(k) { return KIND[k] || KIND.mem; }
+
+      function focusNode(node) {
+        if (!node || node.empty()) return;
+        selectedId = node.id();
+        clearHi();
+        var nbrEdges = node.connectedEdges();
+        var nbrs = node.neighborhood("node");
+        cy.elements().addClass("faded");
+        node.removeClass("faded").addClass("sel");
+        nbrs.removeClass("faded").addClass("nbr");
+        nbrEdges.removeClass("faded").addClass("hot");
+        populateInspector(node, nbrs);
+        cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 0.9) }, { duration: 220 });
+      }
+
+      function populateInspector(node, nbrs) {
+        if (!insp) return;
+        var kind = node.data("kind") || "mem";
+        var meta = kindMeta(kind);
+        if (inspKchip) {
+          inspKchip.style.background = meta.fill;
+          inspKchip.style.color = meta.text;
+        }
+        if (inspKd) inspKd.style.background = meta.line;
+        if (inspKtext) {
+          var lbl = { code: "CODE", mem: "MEMORY", work: "WORK" }[kind] || "ENTITY";
+          inspKtext.textContent = lbl + " · " + (node.data("etype") || "entity");
+        }
+        if (inspTitle) inspTitle.textContent = node.data("full") || node.data("label") || node.id();
+        if (inspDesc) {
+          var d = node.data("desc") || "";
+          inspDesc.textContent = d;
+          inspDesc.style.display = d ? "" : "none";
+        }
+        if (inspNbrs) {
+          while (inspNbrs.firstChild) inspNbrs.removeChild(inspNbrs.firstChild);
+          nbrs.forEach(function (nb) {
+            var row = document.createElement("button");
+            row.type = "button";
+            row.className = "gr-insp-nbr";
+            var nbMeta = kindMeta(nb.data("kind") || "mem");
+            var dot = document.createElement("span");
+            dot.className = "gr-insp-nbr-d";
+            dot.style.background = nbMeta.line;
+            var nm = document.createElement("span");
+            nm.className = "gr-insp-nbr-nm";
+            nm.textContent = nb.data("full") || nb.data("label") || nb.id();
+            row.appendChild(dot);
+            row.appendChild(nm);
+            row.addEventListener("click", function () { focusNode(nb); });
+            inspNbrs.appendChild(row);
+          });
+        }
+        if (inspNbrCount) inspNbrCount.textContent = String(nbrs.length);
+        insp.hidden = false;
+      }
+
+      function closeInspector() {
+        if (insp) insp.hidden = true;
+        selectedId = null;
+        clearHi();
+      }
+
+      // re-run the search centred on the selected node (HTMX swap of the center)
+      function recenterOn(term) {
+        if (!term || !window.htmx) return;
+        var project = mount.getAttribute("data-project") || "";
+        window.htmx.ajax(
+          "GET",
+          "/views/graph?project=" + encodeURIComponent(project) + "&q=" + encodeURIComponent(term),
+          { target: "#center-region", swap: "innerHTML" }
+        );
+      }
+
+      // ---- canvas interactions ----
+      cy.on("tap", "node", function (evt) { focusNode(evt.target); });
+      cy.on("dbltap", "node", function (evt) { recenterOn(evt.target.data("full") || evt.target.id()); });
+      cy.on("tap", function (evt) { if (evt.target === cy) closeInspector(); });
+
+      // ---- toolbar ----
+      function on(id, fn) { var el = root.querySelector(id); if (el) el.addEventListener("click", fn); }
+      on("#gr-fit", function () { cy.animate({ fit: { padding: 36 } }, { duration: 220 }); });
+      on("#gr-relayout", function () {
+        cy.layout({
+          name: "cose", animate: false, fit: true, padding: 36,
+          nodeRepulsion: 7000, idealEdgeLength: 70, nodeOverlap: 12,
+          gravity: 0.6, numIter: 900, componentSpacing: 90, randomize: true
+        }).run();
+      });
+      on("#gr-zoom-in", function () { cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: mount.clientWidth / 2, y: mount.clientHeight / 2 } }); });
+      on("#gr-zoom-out", function () { cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: mount.clientWidth / 2, y: mount.clientHeight / 2 } }); });
+      on("#gr-insp-x", closeInspector);
+      on("#gr-insp-recenter", function () { if (selectedId) recenterOn(selectedId); });
+
+      // ---- side-list rows focus their node on the canvas ----
+      root.querySelectorAll("[data-gr-focus]").forEach(function (li) {
+        li.addEventListener("click", function () {
+          var name = li.getAttribute("data-gr-focus");
+          if (!name) return;
+          var node = cy.getElementById(name);
+          if (node && !node.empty()) focusNode(node);
+        });
+      });
+
+      // a deferred fit once the container has its final size (post-swap layout).
+      setTimeout(function () { try { cy.resize(); cy.fit(undefined, 36); } catch (e) {} }, 60);
+    }
+
+    // ---- Lists side-panel toggle ----
+    var stage = root.querySelector("#gr-stage");
+    var listsBtn = root.querySelector("#gr-lists-toggle");
+    var side = root.querySelector("#gr-side");
+    var sideX = root.querySelector("#gr-side-x");
+    function setLists(open) {
+      if (!stage) return;
+      stage.setAttribute("data-lists", open ? "open" : "closed");
+      if (listsBtn) listsBtn.setAttribute("aria-pressed", open ? "true" : "false");
+      if (side) side.setAttribute("aria-hidden", open ? "false" : "true");
+      // let the canvas reclaim/yield width
+      setTimeout(function () { if (window.__grCy) { try { window.__grCy.resize(); window.__grCy.fit(undefined, 36); } catch (e) {} } }, 240);
+    }
+    if (listsBtn) listsBtn.addEventListener("click", function () {
+      var open = stage && stage.getAttribute("data-lists") === "open";
+      setLists(!open);
+    });
+    if (sideX) sideX.addEventListener("click", function () { setLists(false); });
+
+    withCytoscape(build);
+  })();
+</script>
+{% else %}
+<div class="center on" data-active-view="graph">
+  <div class="gr-wrap"><p class="empty">Select a project to explore its knowledge graph.</p></div>
+</div>
+{% endif %}

@@ -1,0 +1,17 @@
+# Console (Inc00) — local dev artifacts
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# PyInstaller build output (R6 packaging). console.spec IS source — keep it.
+# Leading slash anchors these to THIS dir (console/) ONLY — so `dist/` does NOT also swallow the
+# nested, deliberately-TRACKED spa/dist SPA bundle the redistributable ships.
+/build/
+/dist/
+
+# Console-local settings store (R4a) — operator-entered config + secrets.
+# Never commit this: it holds provider API keys + console preferences.
+config/settings.local.json
+# atomic-write temp files for the settings store
+config/.settings.*.tmp

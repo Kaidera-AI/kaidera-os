@@ -1,0 +1,20 @@
+{#
+  SETTINGS · provider key-test result. Swapped into a per-row #keytest-<field>
+  slot after POST /settings/system/test-key. Tiny inline ✓/✗ + message.
+
+  The raw key is NEVER here — the server probed the provider and handed us only a
+  boolean + a coarse status + a human message.
+
+  Context:
+    r : {ok: bool, status: str, message: str, label: str}  (None before any test)
+#}
+{% if r %}
+<span class="keytest {{ 'ok' if r.ok else 'bad' }}" role="status" title="{{ r.label }} · {{ r.status }}">
+  {% if r.ok %}
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+  {% else %}
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+  {% endif %}
+  <span class="keytest-msg">{{ r.message }}</span>
+</span>
+{% endif %}

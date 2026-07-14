@@ -1,0 +1,139 @@
+{#
+  AGENT-DETAIL header · INLINE-EDITABLE harness · model · reasoning (the CTO's
+  original "red-underlined" spec). Renders the three header config fields as
+  subtle inline <select> dropdowns instead of plain text, pre-selected to the
+  agent's EFFECTIVE config (registry value overlaid with any console-local
+  override). Lives on the `.sub` line right under the name/role/compound-id.
+
+  ONE SOURCE OF TRUTH: each <select> POSTs to POST /agents/{project}/{agent}/config,
+  which calls the SAME app.settings.save_agent_override the Settings → Configure
+  card uses — so a change here shows in Configure and vice-versa (the app-DB-backed
+  `agent_overrides["{project}:{agent}"]` store is NOT forked).
+  CONSOLE-LOCAL BY DESIGN (feature-gap #81, the CTO's reversed decision): these
+  overrides stay console-local on save — the registry is NOT written on save (it stays
+  authoritative). Committing the config to the Cortex agent registry is the explicit
+  "Promote to registry" action in the SPA config modal; see app.registry_sync.
+
+  Changing the HARNESS re-populates the MODEL + REASONING options client-side from
+  ad-harness-map (no round-trip), exactly like the Configure card; the change then
+  POSTs and this whole sub-line is swapped back (outerHTML) with the new effective
+  state + a transient "saved" pill.
+
+  Context (from main._agent_detail_view):
+    selected_key       : project key (for the POST path)
+    agent              : flattened agent view (name, etc.)
+    agent_compound     : "name@project"
+    ad_cfg             : per-agent config view model (harness, model, reasoning,
+                         harness_label, model_is_catalog, model_options,
+                         model_groups, reasoning_levels, ov_harness/model/reasoning,
+                         reg_* hints) — SAME shape as a Configure row
+    ad_harness_options : [{value,label}] for the harness <select>
+    ad_saved           : (optional) truthy after a save → shows the "saved" pill
+    ad_save_error      : (optional) error string when a save failed
+#}
+<div class="sub ad-cfg-sub"
+     id="ad-cfg-sub"
+     data-config-url="/agents/{{ selected_key }}/{{ agent.name }}/config">
+  <span class="cid" title="{{ agent_compound }}">{{ agent_compound }}</span>
+  <span class="sep-d" aria-hidden="true">·</span>
+
+  {# ---------- harness (inline) ---------- #}
+  <span class="ad-cf" title="Harness — execution lane{{ ' · console override' if ad_cfg.ov_harness else ' · registry value' }} (registry: {{ ad_cfg.reg_harness_label }})">
+    <select
+      class="ad-cf-sel"
+      name="harness"
+      data-role="harness"
+      aria-label="Harness"
+      hx-post="/agents/{{ selected_key }}/{{ agent.name }}/config"
+      hx-trigger="change"
+      hx-target="#ad-cfg-sub"
+      hx-swap="outerHTML"
+      hx-include="closest .ad-cfg-sub"
+      onchange="adOnHarnessChange(this)"
+    >
+      {% for opt in ad_harness_options %}
+      <option value="{{ opt.value }}" {{ 'selected' if ad_cfg.harness == opt.value else '' }}>{{ opt.label }}</option>
+      {% endfor %}
+      {# tolerate an unknown current harness (still show it as selected) #}
+      {% if ad_cfg.harness and ad_cfg.harness not in (ad_harness_options | map(attribute='value') | list) %}
+      <option value="{{ ad_cfg.harness }}" selected>{{ ad_cfg.harness_label }}</option>
+      {% endif %}
+    </select>
+    {% if ad_cfg.ov_harness %}<span class="ad-cf-dot" title="console-local override"></span>{% endif %}
+  </span>
+
+  <span class="sep-d" aria-hidden="true">·</span>
+
+  {# ---------- model (inline · populated per harness) ---------- #}
+  <span class="ad-cf" title="Model{{ ' · console override' if ad_cfg.ov_model else ' · registry value' }} (registry: {{ ad_cfg.reg_model or '—' }})">
+    <select
+      class="ad-cf-sel"
+      name="model"
+      data-role="model"
+      aria-label="Model"
+      hx-post="/agents/{{ selected_key }}/{{ agent.name }}/config"
+      hx-trigger="change"
+      hx-target="#ad-cfg-sub"
+      hx-swap="outerHTML"
+      hx-include="closest .ad-cfg-sub"
+    >
+      {% if ad_cfg.model_is_catalog %}
+        {# kaidera/pi → grouped provider catalog #}
+        {% for g in ad_cfg.model_groups %}
+        <optgroup label="{{ g.label }}">
+          {% for m in g.models %}
+          <option value="{{ m.value }}" {{ 'selected' if ad_cfg.model == m.value else '' }}>{{ m.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      {% else %}
+        {# subscription lane → fixed per-harness set #}
+        {% for m in ad_cfg.model_options %}
+        <option value="{{ m.value }}" {{ 'selected' if ad_cfg.model == m.value else '' }}>{{ m.label }}</option>
+        {% endfor %}
+      {% endif %}
+      {# tolerate a current model not in the option set (registry/legacy) #}
+      {% if ad_cfg.model %}<option value="{{ ad_cfg.model }}" {{ 'selected' if not ad_cfg.model_is_catalog and ad_cfg.model not in (ad_cfg.model_options | map(attribute='value') | list) else '' }} class="ad-cf-opt-current">{{ ad_cfg.model }}</option>{% endif %}
+    </select>
+    {% if ad_cfg.ov_model %}<span class="ad-cf-dot" title="console-local override"></span>{% endif %}
+  </span>
+
+  <span class="sep-d" aria-hidden="true">·</span>
+
+  {# ---------- reasoning / effort (inline · per harness) ---------- #}
+  <span class="ad-cf" title="Reasoning / effort{{ ' · console override' if ad_cfg.ov_reasoning else ' · registry value' }} (registry: {{ ad_cfg.reg_reasoning or '—' }})">
+    <select
+      class="ad-cf-sel"
+      name="reasoning"
+      data-role="reasoning"
+      aria-label="Reasoning"
+      hx-post="/agents/{{ selected_key }}/{{ agent.name }}/config"
+      hx-trigger="change"
+      hx-target="#ad-cfg-sub"
+      hx-swap="outerHTML"
+      hx-include="closest .ad-cfg-sub"
+    >
+      {% for lvl in ad_cfg.reasoning_levels %}
+      <option value="{{ lvl }}" {{ 'selected' if ad_cfg.reasoning == lvl else '' }}>{{ lvl }}</option>
+      {% endfor %}
+      {% if ad_cfg.reasoning and ad_cfg.reasoning not in ad_cfg.reasoning_levels %}
+      <option value="{{ ad_cfg.reasoning }}" selected>{{ ad_cfg.reasoning }}</option>
+      {% endif %}
+    </select>
+    {% if ad_cfg.ov_reasoning %}<span class="ad-cf-dot" title="console-local override"></span>{% endif %}
+  </span>
+  <span class="ad-cf-tail" aria-hidden="true">reasoning</span>
+
+  {# transient save confirmation (swapped in after a POST) #}
+  {% if ad_save_error %}
+  <span class="ad-cf-saved err" role="alert" title="{{ ad_save_error }}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+    save failed
+  </span>
+  {% elif ad_saved %}
+  <span class="ad-cf-saved ok" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+    saved
+  </span>
+  {% endif %}
+</div>

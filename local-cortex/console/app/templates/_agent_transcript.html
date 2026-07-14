@@ -1,0 +1,83 @@
+{#
+  AGENT DETAIL — the selected run's LIVE WORK TRANSCRIPT pane (the prominent
+  content of the agent-detail center). Included by _agent_detail.html. Pinning a
+  different run from the recent-run strip re-requests the whole agent-detail center
+  with ?run=<id> — no separate panel route needed.
+
+  Reuses the /crew transcript markup + CSS (`cr-tx-*` / `cr-seg-*`) so an agent's
+  run renders identically to the Crew view. The segments come from the RunState SSOT
+  store's run_span rows (mapped 1:1 to seg-{kind}); the seg-{kind} renderer covers:
+    "output"     — the reply text (worker / chat output spans)
+    "thinking"   — inline thinking block (worker thinking spans, server-rendered)
+    "tool"       — tool call / result (worker tool spans)
+  (The legacy feed-stream-only kinds think / chat-in / chat-reply / status went away
+  with the ~/.cortex-feed feed at T12; their .cr-seg.seg-{kind} CSS is left harmless.)
+
+  Context (from main._agent_runs_view_store, merged into the agent-detail context):
+    agent_run_selected : the selected run's transcript (header + segments + body)
+                         or None. Same shape as crew_selected.
+#}
+{% if agent_run_selected %}
+{% set t = agent_run_selected %}
+<div class="cr-tx ad-tx {{ 'is-running' if t.running else ('is-error' if t.status == 'error' else 'is-done') }}">
+  <div class="cr-tx-head">
+    <span class="cr-tx-dot st-{{ t.status }}" aria-hidden="true"></span>
+    <span class="cr-tx-who">{{ t.agent_display }}</span>
+    <span class="cr-tx-st st-{{ t.status }}">{{ t.status_label }}</span>
+    {% if t.running %}
+    <span class="cr-work-dots" title="{{ t.agent_display }} is working" aria-label="{{ t.agent_display }} is working">
+      <i></i><i></i><i></i>
+    </span>
+    {% endif %}
+    {% if t.handoff_short %}<code class="cr-tx-hid" title="handoff {{ t.handoff_id }}">{{ t.handoff_short }}</code>{% endif %}
+    <span class="cr-tx-meta">
+      {% if t.harness %}<span>{{ t.harness }}</span>{% endif %}
+      {% if t.model %}<span class="cr-tx-model">{{ t.model }}</span>{% endif %}
+      <span class="cr-tx-age">{% if t.running %}started {{ t.started_ago }}{% else %}ended {{ t.ended_ago or t.updated_ago }}{% endif %}</span>
+    </span>
+  </div>
+
+  {% if t.segments %}
+  <div class="cr-tx-body" aria-live="polite">
+    {% for seg in t.segments %}
+    {# The `input` span (multi-turn chat, feature-gap step 6) is the USER's message —
+       label it 'you' so the transcript reads as a dialogue, not agent output. Other
+       kinds (output/tool/thinking) render as before. #}
+    <div class="cr-seg seg-{{ seg.kind }}">
+      {% if seg.kind == 'input' %}<span class="cr-seg-tag">you</span>{% elif seg.kind != 'output' %}<span class="cr-seg-tag">{{ seg.kind }}</span>{% endif %}
+      <span class="cr-seg-txt">{{ seg.text }}</span>
+    </div>
+    {% endfor %}
+    {% if t.running %}<span class="cr-cursor" aria-hidden="true"></span>{% endif %}
+    {% if t.truncated %}<div class="cr-trunc">… transcript truncated (per-run cap reached)</div>{% endif %}
+  </div>
+  {% elif t.running %}
+  <div class="cr-tx-body cr-tx-waiting" aria-live="polite">
+    <span class="cr-wait-dot" aria-hidden="true"></span>
+    <span class="cr-work-dots cr-work-dots-lg" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span>{{ t.agent_display }} is starting — waiting for the first output…</span>
+  </div>
+  {% else %}
+  <div class="cr-tx-body cr-tx-empty">
+    {% if t.status == 'error' %}
+    This run produced no output before it errored{% if t.error %}: <b>{{ t.error }}</b>{% endif %}.
+    {% else %}
+    This run completed without streaming any text output.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if t.status == 'error' and t.error and t.segments %}
+  <div class="cr-tx-err">errored: <b>{{ t.error }}</b></div>
+  {% endif %}
+</div>
+{% else %}
+{# No run selected / none captured yet for this agent. #}
+<div class="cr-tx-none ad-tx-none">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 10h8M8 14h5"/><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+  <div class="cr-tx-none-t">No run to show yet</div>
+  <p class="cr-tx-none-s">
+    Dispatch <b>{{ agent.display_name }}</b> (chat below) or turn project dispatch ON — the moment it runs, its output streams in right here.
+  </p>
+</div>
+{% endif %}

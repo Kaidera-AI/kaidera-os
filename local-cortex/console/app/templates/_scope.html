@@ -1,0 +1,45 @@
+{#
+  COLUMNS 2 + 3 — the project-scoped region (agents column + center). Swapped
+  together by GET /projects/{key} on a project switch (and the center's own
+  10s poll). Carries data-selected-key on its root so the rail re-syncs its
+  active highlight after the swap.
+
+  The FILE PANE OVERLAY (#ws-editor-overlay) is a SIBLING of #center-region — it
+  slides in from the right and covers the center, while the agent-detail /
+  dashboard stay mounted underneath (the center is never swapped out, so its
+  state is preserved and restored on close). It lives here (not in console.html)
+  so a project switch — which re-renders this scope and re-roots the col-4
+  worktree — also resets the pane to closed. Clicking a tree file loads its
+  preview body into #ws-editor-body and slides this in (openWsFile); the body
+  carries its own header (icon · path · Edit/Save · ✕).
+#}
+<div class="scope-inner" data-selected-key="{{ selected_key }}">
+  {% include "_agents_col.html" %}
+
+  {#
+    CENTER STACK — occupies the center grid cell (col-3) and is the positioning
+    context for the editor pop-out. #center-region (the swappable view) and
+    #ws-editor-overlay are stacked here: the overlay is `position:absolute;
+    inset:0` so it covers EXACTLY this cell (full-height center) when it slides
+    in, never the agents column or the workspace dock. The overlay is a sibling
+    of #center-region (not a child) so an HTMX center-view swap — which replaces
+    #center-region's innerHTML — never wipes the open editor.
+  #}
+  <div class="center-stack">
+    <div id="center-region" class="center-region">
+      {% include "_center.html" %}
+    </div>
+
+    {# ---- file pane overlay (slides in from the right, covers the center) ----
+       The body (header · preview/textarea · footer) is swapped in by
+       /workspace/{key}/edit and carries its own ✕ / Edit / Save chrome. #}
+    <section
+      class="ws-editor-overlay"
+      id="ws-editor-overlay"
+      aria-hidden="true"
+      aria-label="File preview"
+    >
+    <div class="ws-editor-body" id="ws-editor-body" tabindex="-1"></div>
+    </section>
+  </div>
+</div>

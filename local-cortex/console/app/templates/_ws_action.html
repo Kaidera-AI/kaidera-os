@@ -1,0 +1,26 @@
+{#
+  WORKSPACE FILE-ACTION RESULT — toast payload for create/rename/move/delete.
+
+  Returned by the mutation routes (/workspace/{key}/new|rename|move|delete) and
+  swapped into the #ws-toast-slot. On success the route ALSO fires
+  HX-Trigger:ws-tree-changed so the tree refreshes. Two states:
+    - ws_ok    → success toast ("Created file · path/to/x")
+    - ws_error → error toast (e.g. a 403 path-escape rejection — nothing changed)
+
+  Vars:
+    ws_ok      : success label, or None
+    ws_detail  : the affected rel-path (success only)
+    ws_error   : error message (failure only)
+    ws_status  : HTTP-ish status code
+#}
+{% if ws_error %}
+  <div class="ws-toast ws-toast--err on" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+    <span><b>{{ ws_status }}</b> — {{ ws_error }}</span>
+  </div>
+{% elif ws_ok %}
+  <div class="ws-toast on" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+    <span><b>{{ ws_ok }}</b> <span class="mono">{{ ws_detail }}</span></span>
+  </div>
+{% endif %}

@@ -1,0 +1,4 @@
+.gitattributes export-ignore
+
+# Generated bundles can contain third-party template and shader whitespace.
+local-cortex/console/spa/dist/** -whitespace

@@ -1,0 +1,96 @@
+name: Community quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: community-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check public-source boundary
+        run: bash scripts/fitness/check-oss-package-hygiene.sh
+      - name: Validate public project examples
+        run: |
+          python3 redistributable/scripts/validate-cortex-project-config.py redistributable/examples/blank.project.json
+          python3 redistributable/scripts/validate-cortex-project-config.py redistributable/examples/customer-six-role.project.json
+      - name: Compile Python entry points
+        run: |
+          python3 -m compileall -q .agents/api .agents/scripts local-cortex/console/app local-cortex/containers scripts redistributable/scripts
+      - name: Parse shell entry points
+        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Lint community documentation
+        run: >-
+          npx --yes markdownlint-cli2 README.md CONTRIBUTING.md SECURITY.md
+          docs/HOW_IT_WORKS.md docs/MAINTAINER_GUIDE.md docs/design/*.md
+          local-cortex/console/CHANGELOG.md .github/PULL_REQUEST_TEMPLATE.md
+
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .agents/api/requirements.txt
+      - run: python -m pip install -r .agents/api/requirements.txt pytest pytest-asyncio pyyaml
+      - name: Test Cortex API
+        working-directory: .agents/api
+        run: PYTHONPATH=. python -m pytest -q tests
+      - name: Test community scripts and fitness gates
+        run: PYTHONPATH=.agents/api python -m pytest -q .agents/tests scripts/fitness/tests
+
+  console-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: local-cortex/console/requirements.txt
+      - run: >-
+          python -m pip install -r local-cortex/console/requirements.txt
+          pytest pytest-asyncio
+      - name: Test Kaidera OS Console
+        working-directory: local-cortex/console
+        run: python -m pytest -q
+
+  spa:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: local-cortex/console/spa
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: local-cortex/console/spa/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build

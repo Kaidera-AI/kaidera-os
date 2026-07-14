@@ -1,0 +1,140 @@
+{#
+  R7 · HISTORY center view (live).
+
+  A reverse-chronological timeline of the selected project's recent activity
+  (who · what · when), with a recent-decisions rail alongside. Mirrors the
+  prototype run-history screen's look (design/screens/history.html — page head,
+  grouped run rows, status chips) but rebuilt as a CENTER view over REAL Cortex
+  data: the noisy /history tool-call JSON is summarized server-side (reusing the
+  agent-detail `_summarize_history_row` helper), and the rail shows recent
+  decisions/lessons from /search.
+
+  Context (built in main._history_view):
+    `selected`        : project record (header hex/name)
+    `selected_key`    : project key
+    `hist_timeline`   : [{kind, kind_label, label, detail, when, agent, role}]
+                        newest-first (reverse-chronological)
+    `hist_count`      : timeline row count
+    `hist_agents`     : distinct agent names seen in the window
+    `hist_agent_count`: count of distinct agents
+    `hist_decisions`  : [{text, source, category}] recent decisions/lessons
+    `hist_decision_count`: count
+
+  NOTE: this is a read-only activity feed. The prototype's rich span-tree /
+  gantt trace replay is a later increment — TODO(trace-replay) below.
+#}
+{% if selected %}
+<div class="center on" data-active-view="history">
+  <div class="hi-wrap">
+
+    {# ---------- page head ---------- #}
+    <div class="hi-head">
+      <div class="hi-title-wrap">
+        <span class="hi-tic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+        </span>
+        <div>
+          <div class="hi-title">Activity history</div>
+          <div class="hi-sub">
+            <span>{{ selected.display_name or selected.project_key }}</span>
+            <span class="hi-sep" aria-hidden="true">·</span>
+            <span><b>{{ hist_count }}</b> recent events</span>
+            {% if hist_agent_count %}
+            <span class="hi-sep" aria-hidden="true">·</span>
+            <span><b>{{ hist_agent_count }}</b> agents</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="hi-head-r">
+        <span class="hi-live"><span class="pulse" aria-hidden="true"></span> live · /history</span>
+        <button
+          type="button"
+          class="hi-refresh"
+          hx-get="/views/history?project={{ selected_key }}"
+          hx-target="#center-region"
+          hx-swap="innerHTML"
+          title="Refresh the activity timeline now"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    {# ---------- two-pane: timeline (left) + recent decisions (right) ---------- #}
+    <div class="hi-split">
+
+      {# ===== TIMELINE ===== #}
+      <section class="hi-feed-pane">
+        {% if hist_timeline %}
+        <ol class="hi-timeline">
+          {% for row in hist_timeline %}
+          <li class="hi-row k-{{ row.kind }}">
+            <span class="hi-rail" aria-hidden="true">
+              <span class="hi-node"></span>
+            </span>
+            <span class="hi-ic" aria-hidden="true">
+              {% if row.kind == "tool" %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              {% elif row.kind == "think" %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2a7 7 0 0 0-4 12.7V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.3A7 7 0 0 0 12 2z"/><path d="M9 21h6"/></svg>
+              {% else %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              {% endif %}
+            </span>
+            <span class="hi-body">
+              <span class="hi-line">
+                <span class="hi-who">{{ row.agent }}</span>
+                <span class="hi-kind">{{ row.kind_label }}</span>
+                {% if row.when %}<span class="hi-when">{{ row.when }}</span>{% endif %}
+              </span>
+              <span class="hi-text">{{ row.label }}</span>
+              {% if row.detail %}<code class="hi-detail">{{ row.detail }}</code>{% endif %}
+            </span>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <div class="hi-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <div class="hi-empty-t">No recent activity</div>
+          <p class="hi-empty-s">Nothing in the live <code>/history</code> window for this project yet. Activity appears here as agents log decisions and run tools.</p>
+        </div>
+        {% endif %}
+      </section>
+
+      {# ===== RECENT DECISIONS RAIL ===== #}
+      <aside class="hi-side">
+        <div class="hi-side-h">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Recent decisions
+          <span class="hi-side-ct">{{ hist_decision_count }}</span>
+        </div>
+        {% if hist_decisions %}
+        <ul class="hi-decisions">
+          {% for d in hist_decisions %}
+          <li class="hi-dec">
+            <span class="hi-dec-src src-{{ d.source }}">{{ d.source }}</span>
+            <span class="hi-dec-text">{{ d.text }}</span>
+            {% if d.category %}<span class="hi-dec-cat">{{ d.category }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="hi-side-empty">No recent decisions or lessons surfaced from <code>/search</code> for this project.</p>
+        {% endif %}
+        <p class="hi-side-note">
+          Rolled up from Cortex <b>L1 messages</b> (timeline) + <b>decisions / lessons</b> (rail). The rich span-tree trace replay is a later increment.
+          {# TODO(trace-replay): wire the prototype's gantt / span-tree per-run replay (design/screens/history.html) once a /runs trace endpoint exists. #}
+        </p>
+      </aside>
+
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="center on" data-active-view="history">
+  <div class="hi-wrap"><p class="empty">Select a project to view its activity history.</p></div>
+</div>
+{% endif %}

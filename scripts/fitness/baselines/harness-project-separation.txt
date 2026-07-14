@@ -1,0 +1,2 @@
+# Baseline for check-harness-project-separation.sh — regenerated 2026-06-20.
+# One offender token per line; #-comments and blanks ignored. Target: empty (fully separated).

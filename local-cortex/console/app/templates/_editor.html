@@ -1,0 +1,273 @@
+{#
+  WORKSPACE CENTER FILE PANE — preview + edit body.
+
+  Swapped into the center overlay's #ws-editor-body when a tree file is CLICKED
+  (GET /workspace/{key}/edit?path=…&mode=preview|edit). The overlay SHELL (the
+  sliding pane that covers the center) lives in _scope.html; this fragment is the
+  header + content + footer that fill it.
+
+  Two modes (server-rendered; the Edit/Preview toggle re-fetches this route):
+    - PREVIEW (edit_mode false) — read-only.
+        · excalidraw file  → its DRAWING, rendered to SVG from the real scene
+        · text file        → monospace body + line-number gutter
+      Header carries an "Edit" button (text + non-truncated only).
+    - EDIT (edit_mode true) — an editable monospace <textarea> of the file
+      SOURCE + Save / Preview / Close. Save POSTs to /workspace/{key}/file.
+
+  Header always carries the file icon + path + a "Close" (✕) that dismisses the
+  whole pane (closeWsEditor / Esc). Errors (escape / missing / binary) render a
+  clean banner, NEVER the file.
+
+  Vars:
+    file       : read_file() dict + {is_excalidraw, excalidraw:{count,svg}, kind}
+    edit_mode  : bool — render the editable textarea instead of the preview
+    ws_error   : error message when the read was rejected/failed
+    ws_status  : HTTP-ish status (for the error header)
+    ws_project_key, ws_path : scoped key + rel-path
+#}
+{% macro kind_icon(kind) -%}
+  {%- if kind == 'excal' -%}
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 3h18v18H3z"/><path d="M7 7h4v4H7zM14 13h3v3h-3z"/><path d="M11 9h3"/></svg>
+  {%- else -%}
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+  {%- endif -%}
+{%- endmacro %}
+
+{% if ws_error %}
+  <div class="ed-head">
+    <span class="ed-ic" aria-hidden="true">{{ kind_icon('file') }}</span>
+    <span class="ed-title" title="{{ ws_path or 'file' }}">{{ ws_path or 'file' }}</span>
+    <span class="ed-badge ed-badge--err">{{ ws_status }}</span>
+    <button class="ovl-x" type="button" onclick="closeWsEditor()" title="Close (Esc)" aria-label="Close file">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="ed-errwrap" role="alert">
+    <div class="ed-err">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+      <span>{{ ws_error }}</span>
+    </div>
+  </div>
+{% else %}
+  {# ---- header: icon · path · meta · [Edit/Preview toggle] · Save · Close ---- #}
+  <div class="ed-head">
+    <span class="ed-ic {{ 'ed-ic--excal' if file.is_excalidraw else '' }}" aria-hidden="true">{{ kind_icon(file.kind) }}</span>
+    <span class="ed-meta-wrap">
+      <span class="ed-title" title="{{ file.rel_path }}">{{ file.rel_path }}{% if edit_mode or file.is_excalidraw %}<span class="ed-dirty" id="ed-dirty" hidden>● unsaved</span>{% endif %}</span>
+      <span class="ed-sub2">
+        {%- if file.is_excalidraw and file.excalidraw -%}{{ file.excalidraw.count }} element{{ '' if file.excalidraw.count == 1 else 's' }} · {% endif -%}
+        {%- if file.lines is not none -%}{{ file.lines }} line{{ '' if file.lines == 1 else 's' }} · {% endif -%}{{ file.size }} B
+      </span>
+    </span>
+
+    <span class="ed-head-r">
+      {% if edit_mode %}
+      {# EDIT mode → Preview (discard textarea, reload read-only) · Save #}
+      <button
+        class="ed-btn"
+        type="button"
+        title="Back to preview"
+        hx-get="/workspace/{{ ws_project_key }}/edit?path={{ ws_path | urlencode }}&mode=preview"
+        hx-target="#ws-editor-body"
+        hx-swap="innerHTML"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        Preview
+      </button>
+      <button
+        type="submit"
+        form="ws-editor-form"
+        class="ed-btn ed-btn--pri"
+        id="ws-editor-save"
+        title="Save to disk"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+        Save
+      </button>
+      {% elif file.is_excalidraw %}
+      {# PREVIEW · excalidraw → LIVE canvas. Save persists the scene; "Source"
+         flips to the raw-text editor to repair/inspect the .excalidraw(.md). #}
+      <button
+        class="ed-btn"
+        type="button"
+        title="Edit the raw .excalidraw source"
+        hx-get="/workspace/{{ ws_project_key }}/edit?path={{ ws_path | urlencode }}&mode=edit"
+        hx-target="#ws-editor-body"
+        hx-swap="innerHTML"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+        Source
+      </button>
+      <button
+        type="button"
+        class="ed-btn ed-btn--pri"
+        id="xc-save"
+        title="Save drawing to disk"
+        onclick="window.ExcalEditor && window.ExcalEditor.save()"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+        Save
+      </button>
+      {% elif not file.truncated %}
+      {# PREVIEW mode → Edit (load the editable textarea) #}
+      <button
+        class="ed-btn ed-btn--pri"
+        type="button"
+        title="Edit this file"
+        hx-get="/workspace/{{ ws_project_key }}/edit?path={{ ws_path | urlencode }}&mode=edit"
+        hx-target="#ws-editor-body"
+        hx-swap="innerHTML"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+        Edit
+      </button>
+      {% endif %}
+      <button class="ovl-x" type="button" onclick="closeWsEditor()" title="Close (Esc)" aria-label="Close file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </span>
+  </div>
+
+  {% if file.truncated %}
+  <div class="ed-banner ed-banner--warn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    <span>large file — only the first 256&nbsp;KB loaded; preview only (saving would truncate it).</span>
+  </div>
+  {% endif %}
+
+  {% if edit_mode %}
+  {#
+    EDIT — an editable monospace textarea seeded with the file SOURCE (for an
+    excalidraw file this is the raw .excalidraw(.md) markdown/JSON). Save POSTs
+    to the secure write; the result swaps into #ws-editor-status.
+  #}
+  <form
+    class="ed-form"
+    id="ws-editor-form"
+    hx-post="/workspace/{{ ws_project_key }}/file?path={{ ws_path | urlencode }}"
+    hx-target="#ws-editor-status"
+    hx-swap="innerHTML"
+    hx-disabled-elt="#ws-editor-save"
+  >
+    <textarea
+      class="ed-ta"
+      id="ws-editor-ta"
+      name="content"
+      spellcheck="false"
+      autocomplete="off"
+      autocapitalize="off"
+      wrap="off"
+      oninput="wsEditorDirty()"
+      aria-label="File contents for {{ file.rel_path }}"
+    >{{ file.content }}</textarea>
+
+    <div class="ed-foot">
+      <div class="ed-foot-l" id="ws-editor-status">
+        <span class="ed-hint">UTF-8 · edits are saved straight to the worktree{% if file.is_excalidraw %} · editing raw source{% endif %}</span>
+      </div>
+    </div>
+  </form>
+  {% elif file.is_excalidraw %}
+  {#
+    PREVIEW · excalidraw — a LIVE Excalidraw canvas (the vendored React build),
+    exactly like Obsidian's view+edit: the user views AND draws on the canvas;
+    the header "Save" persists the scene back into the Obsidian .excalidraw(.md)
+    wrapper via the existing write route; closing WITHOUT save discards (the
+    canvas state is the only home for unsaved edits). The raw source text is
+    handed to the JS as `file.content`; it parses the scene (compressed-json /
+    json / raw) and preserves the front-matter + Text-Elements on save.
+
+    A <noscript>/static-SVG fallback keeps a faithful read-only render if the
+    Excalidraw bundle can't run (offline asset hiccup); "Source" repairs raw text.
+  #}
+  <div class="ed-preview ed-preview--excal-live">
+    <div class="xc-live" id="xc-canvas-host" aria-label="Excalidraw canvas for {{ file.rel_path }}">
+      <div class="xc-booting">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3h18v18H3z"/><path d="M7 7h4v4H7zM14 13h3v3h-3z"/></svg>
+        <span>Loading canvas…</span>
+      </div>
+    </div>
+    <div class="xc-foot">
+      <span class="xc-status" id="xc-status"></span>
+      <span class="xc-hint">Live canvas · edits are kept only when you <b>Save</b> · close discards unsaved changes</span>
+    </div>
+  </div>
+  {#
+    Bootstrap (owned by THIS fragment — not console.html). Lazily injects the
+    vendored React + lz-string + Excalidraw UMD + the glue (excal-editor.js) ONCE
+    in dependency order (mirrors the cytoscape lazy-load in _graph.html; all
+    offline, no CDN), then mounts the live canvas into #xc-canvas-host. The raw
+    file text + scoped key/path are handed in via Jinja's tojson (HTML/quote-safe).
+    Runs on body swap (the inline script executes on insert).
+  #}
+  <script>
+    (function () {
+      var spec = {
+        key: {{ ws_project_key | tojson }},
+        path: {{ ws_path | tojson }},
+        isMarkdown: {{ ('true' if file.name.lower().endswith('.excalidraw.md') else 'false') }},
+        raw: {{ (file.content or '') | tojson }}
+      };
+
+      // One-time lazy loader for the Excalidraw bundle (cached on window so a
+      // re-open reuses it instead of re-injecting). Strict order: React →
+      // ReactDOM → lz-string → Excalidraw UMD → glue (the UMD reads
+      // window.React / window.ReactDOM at evaluation time).
+      window.ensureExcalidraw = window.ensureExcalidraw || function (cb) {
+        if (window.ExcalEditor && window.ExcalidrawLib) { cb(); return; }
+        var glue = document.getElementById("xc-lib-glue");
+        if (glue) {
+          if (window.ExcalEditor && window.ExcalidrawLib) { cb(); return; }
+          glue.addEventListener("load", function () { cb(); });
+          return;
+        }
+        var base = "/static/excalidraw/";
+        var chain = [
+          { id: "xc-lib-react", src: base + "react.production.min.js" },
+          { id: "xc-lib-react-dom", src: base + "react-dom.production.min.js" },
+          { id: "xc-lib-lzstring", src: base + "lz-string.min.js" },
+          { id: "xc-lib-excal", src: base + "excalidraw.production.min.js" },
+          { id: "xc-lib-glue", src: base + "excal-editor.js" }
+        ];
+        function loadAt(i) {
+          if (i >= chain.length) { cb(); return; }
+          var item = chain[i];
+          if (document.getElementById(item.id)) { loadAt(i + 1); return; }
+          var s = document.createElement("script");
+          s.id = item.id; s.src = item.src;
+          s.onload = function () { loadAt(i + 1); };
+          s.onerror = function () {
+            var host = document.getElementById("xc-canvas-host");
+            if (host) {
+              host.replaceChildren();
+              var warn = document.createElement("div");
+              warn.className = "xc-load-err";
+              warn.textContent = "Excalidraw library failed to load. " +
+                "Use the Source view to edit the raw file.";
+              host.appendChild(warn);
+            }
+          };
+          document.head.appendChild(s);
+        }
+        loadAt(0);
+      };
+
+      window.ensureExcalidraw(function () {
+        if (window.ExcalEditor) window.ExcalEditor.mount(spec);
+      });
+    })();
+  </script>
+  {% else %}
+  {#
+    PREVIEW · text — read-only monospace body with a line-number gutter (matches
+    the prototype's read surface).
+  #}
+  <div class="ed-preview ed-preview--text">
+    <div class="fv-body">
+      <pre class="fv-gutter" aria-hidden="true">{% for n in range(1, (file.lines or 1) + 1) %}{{ n }}
+{% endfor %}</pre>
+      <pre class="fv-code">{{ file.content }}</pre>
+    </div>
+  </div>
+  {% endif %}
+{% endif %}

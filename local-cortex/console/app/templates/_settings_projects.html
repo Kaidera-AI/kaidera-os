@@ -1,0 +1,107 @@
+{#
+  SETTINGS · Workspace (project canonical-folder config). The IN-APP version of
+  the repo_root fix previously done by CLI: lists every active project with its
+  current canonical working folder (repo_root) + an edit field to CHANGE it.
+
+  On save the row POSTs /settings/projects/{key}/folder, which PATCHes Cortex
+  (admin-token-gated, backend-only) and re-renders THIS whole body so the listed
+  folder reflects the change. The admin token is sourced server-side (env first,
+  then local-cortex/.env) and is NEVER sent to the browser; when it can't be
+  sourced the save is disabled with a clear banner.
+
+  Context:
+    selected_key        : current project key (kept on swap URLs)
+    pf_rows             : [{key, name, repo_root}] active projects
+    pf_count            : number of projects
+    pf_token_configured : bool — is an admin token available? (drives the banner)
+    pf_saved_key        : project just saved (POST only) — flags the row
+    pf_saved_prev       : previous repo_root (POST only) — for previous → new
+    pf_saved_new        : new repo_root (POST only)
+    pf_save_error       : error string (POST only) — inline error banner
+#}
+<div class="set-inner">
+  <div class="set-page on" id="setpage-projects">
+    <div class="set-page-h">Workspace folders</div>
+    <div class="set-page-sub">Each project's <b>canonical working folder</b> (<code>repo_root</code>) — the in-app version of changing it by CLI. This is the folder the project's <b>workspace + all agent worktrees + harness/temp files</b> live under. Editing it PATCHes Cortex with the admin token (kept server-side, never sent to the browser).</div>
+
+    {% if not pf_token_configured %}
+    {# Admin token couldn't be sourced (env nor .env) — saves are disabled. #}
+    <div class="cx-note err pf-tokwarn">
+      <b>Admin token not configured.</b> Set <code>CORTEX_ADMIN_TOKEN</code> in the environment or in <code>local-cortex/.env</code> to edit project folders here. The current folders below are still shown read-only.
+    </div>
+    {% endif %}
+
+    {% if pf_save_error %}
+    <div class="cx-note err pf-result pf-result--err">
+      Couldn't change <code>{{ pf_saved_key }}</code>: {{ pf_save_error }}
+    </div>
+    {% elif pf_saved_key and pf_saved_new %}
+    <div class="cx-note ok pf-result pf-result--ok">
+      Updated <code>{{ pf_saved_key }}</code> ·
+      <span class="pf-prev">{{ pf_saved_prev or "—" }}</span>
+      <span class="pf-arrow" aria-hidden="true">→</span>
+      <b class="pf-new">{{ pf_saved_new }}</b>
+    </div>
+    {% endif %}
+
+    <section class="cx-card pf-card">
+      <header class="cx-card-h">
+        <span class="cx-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        </span>
+        <span class="cx-card-t">Projects</span>
+        <span class="cx-card-sub">{{ pf_count }} active · canonical <code>repo_root</code></span>
+      </header>
+
+      {% if pf_rows %}
+      <ul class="pf-list">
+        {% for r in pf_rows %}
+        <li class="pf-row {{ 'pf-row--saved' if r.key == pf_saved_key and not pf_save_error else '' }}">
+          <div class="pf-row-head">
+            <span class="pf-name">{{ r.name }}</span>
+            <span class="pf-key"><code>{{ r.key }}</code></span>
+          </div>
+          <form
+            class="pf-form"
+            hx-post="/settings/projects/{{ r.key }}/folder?project={{ selected_key or '' }}"
+            hx-target="#settings-body"
+            hx-swap="innerHTML"
+          >
+            <label class="pf-flabel" for="pf-input-{{ r.key }}">Working folder</label>
+            <div class="pf-frow">
+              <input
+                id="pf-input-{{ r.key }}"
+                class="pf-input"
+                type="text"
+                name="repo_root"
+                value="{{ r.repo_root or '' }}"
+                placeholder="/absolute/path/to/folder"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                {{ 'disabled' if not pf_token_configured else '' }}
+              >
+              <button
+                type="submit"
+                class="pf-save"
+                {{ 'disabled' if not pf_token_configured else '' }}
+                title="Change this project's canonical working folder"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+                Save
+              </button>
+            </div>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="cx-note">No active projects returned by Cortex.</p>
+      {% endif %}
+    </section>
+
+    <p class="cx-foot-note">
+      Changing a project's <code>repo_root</code> re-points its workspace + every agent worktree + harness/temp files to the new folder. The path must be <b>absolute</b>. Read-only Cortex surfaces are untouched — this is the single admin-authed write the console makes.
+    </p>
+  </div>
+</div>

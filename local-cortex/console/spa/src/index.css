@@ -1,0 +1,319 @@
+@import 'tailwindcss';
+
+/* Main views can be much narrower than the viewport once project, worker, and workspace
+   columns are open. Container queries let complex views adapt to their real allocation. */
+.main-view-container {
+  container-type: inline-size;
+}
+
+@container (max-width: 42rem) {
+  .explain-layout {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .explain-sidebar {
+    width: 100%;
+    min-height: 22rem;
+    max-height: 28rem;
+    flex: none;
+  }
+
+  .explain-stage {
+    min-height: 34rem;
+    flex: none;
+  }
+}
+
+/*
+ * Kaidera OS console — design tokens (Tailwind v4 @theme).
+ * Glass morphism on a dark base; mint/teal accent matched to the isometric-cube
+ * mark in the Kaidera AI logo. Tokens here become Tailwind utilities (bg-base-900,
+ * text-mint-400, border-glass-line, etc.) so components stay declarative.
+ */
+@theme {
+  /* Dark base — deep slate/ink with a faint teal undertone. */
+  --color-base-950: #060a0e;
+  --color-base-900: #0a1117;
+  --color-base-850: #0e1620;
+  --color-base-800: #131e29;
+  --color-base-700: #1b2a38;
+
+  /* Mint / teal accent (the cube). Deepened 500/600 for more button/fill contrast. */
+  --color-mint-200: #b8f5e4;
+  --color-mint-300: #7eecd0;
+  --color-mint-400: #43e0b6;
+  --color-mint-500: #15bd91;
+  --color-mint-600: #0f9b76;
+
+  /* Ink / text scale. */
+  --color-ink-100: #eef5f3;
+  --color-ink-300: #b6c6c4;
+  --color-ink-400: #8499a0;
+  --color-ink-500: #5f757d;
+
+  /* Status hues. */
+  --color-run-running: #43e0b6;
+  --color-run-queued: #e8c45a;
+  --color-run-completed: #5b8fd6;
+  --color-run-errored: #f0726a;
+
+  /* Glass surface edge (consumed via arbitrary values in components too). */
+  --color-glass-line: rgb(122 236 208 / 0.12);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-base-950);
+    color: var(--color-ink-100);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    /* Ambient depth: two soft mint glows bleeding from the corners. */
+    background-image:
+      radial-gradient(60rem 40rem at 12% -8%, rgb(31 201 156 / 0.10), transparent 60%),
+      radial-gradient(48rem 36rem at 102% 8%, rgb(67 224 182 / 0.07), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  /* Slim, on-theme scrollbars. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(67 224 182 / 0.25) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(67 224 182 / 0.22);
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(67 224 182 / 0.4);
+  }
+}
+
+@layer utilities {
+  /* The glass surface primitive — translucent fill, blur, hairline edge, and a
+     faint inner top-glow. Components compose this with their own padding/radius. */
+  .glass {
+    background-color: rgb(19 30 41 / 0.55);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--color-glass-line);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.04),
+      0 8px 30px -12px rgb(0 0 0 / 0.6);
+  }
+
+  .glass-soft {
+    background-color: rgb(14 22 32 / 0.45);
+    backdrop-filter: blur(10px) saturate(130%);
+    -webkit-backdrop-filter: blur(10px) saturate(130%);
+    border: 1px solid rgb(122 236 208 / 0.08);
+  }
+
+  /* A subtle mint focus ring for interactive glass rows. */
+  .ring-mint {
+    box-shadow: 0 0 0 1px rgb(67 224 182 / 0.5), 0 0 18px -4px rgb(67 224 182 / 0.45);
+  }
+}
+
+/* The "thinking" sparkle — a gentle pulse + slow half-turn (Claude-Code-style).
+   Consumed via the arbitrary utility `animate-[kaidera-sparkle_1.6s_ease-in-out_infinite]`
+   on the inline 4-point star in the chat composer. */
+@keyframes kaidera-sparkle {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: rotate(0deg) scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: rotate(180deg) scale(1.1);
+  }
+}
+
+/*
+ * ── PLAN DOC TYPOGRAPHY ───────────────────────────────────────────────────
+ * Themed markdown styling for the visual-plan renderer (MdxPlanRenderer). We do
+ * NOT use @tailwindcss/typography (`prose`) — it isn't installed and its defaults
+ * fight the glass theme — so this is a small, theme-aware stylesheet driven by the
+ * same token vars (auto-themes in light/dark). Scoped to `.plan-doc` so it never
+ * leaks into the rest of the app.
+ */
+.plan-doc {
+  color: var(--color-ink-100);
+  font-size: 0.925rem;
+  line-height: 1.7;
+}
+.plan-doc > :first-child { margin-top: 0; }
+.plan-doc h1,
+.plan-doc h2,
+.plan-doc h3,
+.plan-doc h4 {
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--color-ink-100);
+  scroll-margin-top: 1rem;
+}
+.plan-doc h1 {
+  font-size: 1.75rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--color-mint-500);
+  letter-spacing: -0.01em;
+}
+.plan-doc h2 {
+  font-size: 1.35rem;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--color-glass-line);
+  color: var(--color-mint-300);
+}
+.plan-doc h3 {
+  font-size: 1.12rem;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--color-ink-100);
+}
+.plan-doc h4 {
+  font-size: 0.98rem;
+  font-weight: 600;
+  margin: 1.15rem 0 0.4rem;
+  color: var(--color-ink-300);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.plan-doc p { margin: 0.7rem 0; }
+.plan-doc a {
+  color: var(--color-mint-500);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.plan-doc strong { color: var(--color-ink-100); font-weight: 700; }
+.plan-doc ul,
+.plan-doc ol { margin: 0.6rem 0; padding-left: 1.4rem; }
+.plan-doc li { margin: 0.28rem 0; }
+.plan-doc ul > li { list-style: disc; }
+.plan-doc ol > li { list-style: decimal; }
+.plan-doc blockquote {
+  margin: 0.9rem 0;
+  padding: 0.4rem 0 0.4rem 1rem;
+  border-left: 3px solid var(--color-mint-500);
+  color: var(--color-ink-300);
+  background: rgb(31 201 156 / 0.06);
+  border-radius: 0 0.4rem 0.4rem 0;
+}
+.plan-doc hr { margin: 1.6rem 0; border: 0; border-top: 1px solid var(--color-glass-line); }
+.plan-doc code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.12em 0.4em;
+  border-radius: 0.35rem;
+  background: rgb(31 201 156 / 0.12);
+  color: var(--color-mint-200);
+}
+.plan-doc pre {
+  margin: 0.9rem 0;
+  padding: 0.9rem 1rem;
+  border-radius: 0.6rem;
+  overflow: auto;
+  background: var(--color-base-850);
+  border: 1px solid var(--color-glass-line);
+}
+.plan-doc pre code { background: none; padding: 0; color: var(--color-ink-100); font-size: 0.82rem; }
+.plan-doc table {
+  width: 100%;
+  margin: 1rem 0;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  overflow: hidden;
+  border-radius: 0.5rem;
+}
+.plan-doc th,
+.plan-doc td {
+  border: 1px solid var(--color-glass-line);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+.plan-doc thead th {
+  background: rgb(31 201 156 / 0.10);
+  color: var(--color-ink-100);
+  font-weight: 600;
+}
+.plan-doc tbody tr:nth-child(even) { background: rgb(122 236 208 / 0.04); }
+/* In light mode, inline code reads better dark-on-tint than pale mint. */
+html.light .plan-doc code { color: var(--color-mint-600); }
+
+/*
+ * ── LIGHT THEME ──────────────────────────────────────────────────────────
+ * Default is dark (`<html class="dark">`). Adding `html.light` (the ThemeToggle)
+ * redefines the token custom-properties — Tailwind v4 @theme keeps them as `var()`
+ * refs, so every `bg-base-*`/`text-ink-*`/`border-glass-line` utility re-themes at
+ * runtime — plus light variants of the body wash + the `.glass` surfaces.
+ */
+html.light {
+  --color-base-950: #f6f8f9;
+  --color-base-900: #eef2f4;
+  --color-base-850: #e7ecef;
+  --color-base-800: #dce3e7; /* hover/active surfaces read DARKER than the page on light */
+  --color-base-700: #cad4d9;
+
+  /* Ink scale inverts: primary text near-black, muted greys lighten toward the page. */
+  --color-ink-100: #0f1b22;
+  --color-ink-300: #33454d;
+  --color-ink-400: #5a6d76;
+  --color-ink-500: #82949b;
+
+  /* A darker hairline reads on a light surface; accent stays the mint cube. */
+  --color-glass-line: rgb(15 27 34 / 0.12);
+
+  /* Mint inverts for contrast on light: the "ink" shades (200/300) become DARK
+     readable greens (so `text-mint-200` on a pale fill is legible), and the fills
+     (400/500/600) deepen so `bg-mint-500/20` + `ring-mint-400` read with punch.
+     Fixes "green buttons too light" without touching any inline button class. */
+  --color-mint-200: #0b6e52;
+  --color-mint-300: #0d7d5f;
+  --color-mint-400: #109a76;
+  --color-mint-500: #0f9b76;
+  --color-mint-600: #0a6b51;
+}
+
+html.light body {
+  background-color: var(--color-base-950);
+  color: var(--color-ink-100);
+  background-image:
+    radial-gradient(60rem 40rem at 12% -8%, rgb(31 201 156 / 0.12), transparent 60%),
+    radial-gradient(48rem 36rem at 102% 8%, rgb(67 224 182 / 0.09), transparent 55%);
+}
+
+html.light .glass {
+  background-color: rgb(255 255 255 / 0.62);
+  border-color: var(--color-glass-line);
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.65),
+    0 8px 30px -14px rgb(15 27 34 / 0.18);
+}
+
+html.light .glass-soft {
+  background-color: rgb(255 255 255 / 0.5);
+  border-color: rgb(15 27 34 / 0.08);
+}
+
+html.light *::-webkit-scrollbar-thumb {
+  background-color: rgb(21 168 128 / 0.32);
+}
+html.light * {
+  scrollbar-color: rgb(21 168 128 / 0.35) transparent;
+}

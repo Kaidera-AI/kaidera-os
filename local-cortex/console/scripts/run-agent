@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Paths derive from THIS script's own location (never a hardcoded personal path)
+# so it stays drop-in across hosts: scripts/ -> console -> local-cortex -> repo root.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$CONSOLE/../.." && pwd)"
+export PATH="$PATH:$REPO_ROOT/.agents/scripts"
+# Autonomous workers may reason deeply (e.g. a PM on xhigh); give the harness a far
+# longer per-turn cap than interactive chat's 120s — still under the orchestrator's
+# 900s run cap, so a truly-hung child is always reaped. Override-friendly.
+export HARNESS_TURN_TIMEOUT_S="${HARNESS_TURN_TIMEOUT_S:-600}"
+# The orchestrator spawns this with cwd=repo_root (so the worker + its harness run IN the
+# project's folder — v0.1.163), but that means `app` is NOT on the default module path.
+# Pin PYTHONPATH to the console so `-m app.run_agent` resolves regardless of cwd. Without
+# this, autonomous dispatch dies with "No module named 'app'".
+exec env PYTHONPATH="$CONSOLE${PYTHONPATH:+:$PYTHONPATH}" "$CONSOLE/.venv/bin/python" -m app.run_agent "$@"

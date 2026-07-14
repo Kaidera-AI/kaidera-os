@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Host launcher for ONE interactive-chat turn (harness-service Increment 4).
+#
+# The chat twin of scripts/run-agent: runs app.chat_run (one stream_chat turn for a
+# (project, agent, message), writing spans + status to the run-state store under a
+# pre-created run_id) on the HOST, where the harness CLIs (claude-code / pi) + their
+# interactive OAuth login live. The host harness-service (app/harness_service.py)
+# shells THIS script when a containerized console POSTs /chat, so the chat turn runs
+# host-side and the container never needs the CLI.
+#
+# Paths derive from THIS script's own location (never a hardcoded personal path) so it
+# stays drop-in across hosts: scripts/ -> console -> local-cortex -> repo root.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$CONSOLE/../.." && pwd)"
+export PATH="$PATH:$REPO_ROOT/.agents/scripts"
+# Interactive chat is latency-sensitive: a tighter per-turn cap than the autonomous
+# worker's 600s (still override-friendly). Matches the in-process route's 120s framing.
+export HARNESS_TURN_TIMEOUT_S="${HARNESS_TURN_TIMEOUT_S:-120}"
+exec "$CONSOLE/.venv/bin/python" -m app.chat_run "$@"

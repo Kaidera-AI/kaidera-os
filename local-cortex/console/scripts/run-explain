@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Host launcher for ONE visual-explainer generation (Explain capability).
+#
+# The Explain twin of scripts/run-chat: runs app.explain_run (assemble code context →
+# generate a self-contained HTML explainer → persist it to Cortex L5 via POST /artifacts,
+# writing spans + status to the run-state store under a pre-created run_id) on the HOST,
+# where the harness CLIs (claude-code / pi) + their OAuth login AND the repo + the
+# cortex-graph-* CLIs live. The host harness-service (app/harness_service.py) shells THIS
+# script when a containerized console POSTs /explain, so generation runs host-side and the
+# container never needs the CLIs or repo access.
+#
+# Paths derive from THIS script's own location (never a hardcoded personal path) so it
+# stays drop-in across hosts: scripts/ -> console -> local-cortex -> repo root.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSOLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$CONSOLE/../.." && pwd)"
+export PATH="$PATH:$REPO_ROOT/.agents/scripts"
+# Generation can reason deeply (a whole diagram-rich document); give the harness a far
+# longer per-turn cap than interactive chat's 120s — still override-friendly.
+export HARNESS_TURN_TIMEOUT_S="${HARNESS_TURN_TIMEOUT_S:-600}"
+# Run from the console dir so `python -m app.explain_run` resolves the package.
+cd "$CONSOLE"
+exec "$CONSOLE/.venv/bin/python" -m app.explain_run "$@"

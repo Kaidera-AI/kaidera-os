@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Kaidera OS pre-push hook — wires the fitness gates onto `git push`, then
+# CHAINS the existing protected-branch hook so never-push-to-main still wins.
+#
+# Canonical source: <repo>/scripts/fitness/pre-push
+# Installed as:     <repo>/.git/hooks/pre-push (symlink, via install-hooks.sh)
+#
+# Order of operations:
+#   1. Save git's push lines from stdin (stdin can only be read once; we must
+#      forward the same bytes to the chained hook).
+#   2. Run the fitness gates (scripts/fitness/run.sh). A red gate blocks the
+#      push unless FITNESS_GATE_OVERRIDE=1 is set for a deliberate one-off.
+#   3. Chain the protected-branch hook (local-cortex/git-hooks/pre-push),
+#      forwarding the saved stdin + original args, and exit with ITS status.
+#
+# Overridable for testing (default to the repo's real paths):
+#   FITNESS_RUN            path to the gate runner          (default run.sh)
+#   PROTECTED_BRANCH_HOOK  path to the chained hook         (default the real one)
+#   FITNESS_GATE_OVERRIDE  "1" lets a red gate through      (default 0)
+#
+# DO NOT edit local-cortex/git-hooks/pre-push from here — it is chained, not
+# replaced, so its never-push-to-main policy stays the single source of truth.
+
+set -euo pipefail
+
+# Resolve the repo root from THIS hook's own location, never a hardcoded path.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+FITNESS_RUN="${FITNESS_RUN:-$REPO_ROOT/scripts/fitness/run.sh}"
+PROTECTED_BRANCH_HOOK="${PROTECTED_BRANCH_HOOK:-$REPO_ROOT/local-cortex/git-hooks/pre-push}"
+
+# 1. Save stdin (git's push lines) to a temp file — read once, reuse for the
+#    chained hook. A file (not a $(...) capture) preserves bytes verbatim,
+#    including the trailing newline git sends, with no command-substitution
+#    stripping. Cleaned up on exit.
+PUSH_LINES_FILE="$(mktemp "${TMPDIR:-/tmp}/fitness-pre-push.XXXXXX")"
+trap 'rm -f "$PUSH_LINES_FILE"' EXIT
+cat > "$PUSH_LINES_FILE"
+
+# 2. Run the fitness gates.
+gate_status=0
+bash "$FITNESS_RUN" || gate_status=$?
+
+if [[ "$gate_status" -ne 0 ]]; then
+    if [[ "${FITNESS_GATE_OVERRIDE:-0}" == "1" ]]; then
+        echo "[fitness pre-push] FITNESS_GATE_OVERRIDE=1 — red gate bypassed (deliberate one-off); continuing to protected-branch check" >&2
+    else
+        cat >&2 <<'EOF'
+
+╔══════════════════════════════════════════════════════════════════════╗
+║  PUSH BLOCKED — fitness gate red                                      ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                       ║
+║  One or more fitness gates failed (see output above).                 ║
+║  Nothing ships with a red gate.                                       ║
+║                                                                       ║
+║  Fix the gate, or — for a deliberate one-off — set:                   ║
+║    FITNESS_GATE_OVERRIDE=1 git push ...                               ║
+║                                                                       ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+EOF
+        exit 1
+    fi
+fi
+
+# 3. Chain the protected-branch hook, forwarding the saved stdin + original
+#    args. Exit with ITS status so never-push-to-main keeps the final say.
+bash "$PROTECTED_BRANCH_HOOK" "$@" < "$PUSH_LINES_FILE"
+exit $?

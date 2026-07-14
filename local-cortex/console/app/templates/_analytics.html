@@ -1,0 +1,346 @@
+{#
+  R7 · ANALYTICS center view (live) — usage & cost (CTO item 8 rework).
+
+  The SUBSTANCE is the usage + estimated-cost breakdowns, computed for the
+  SELECTED PROJECT from its agents × each agent's effective model × token usage
+  × the providers pricing catalog (built in main._analytics_usage_cost):
+
+    1. Total usage BY MODEL            (bar + table)
+    2. Usage BY MODEL × PROVIDER       (provider totals + their model rows)
+    3. MODEL USAGE PER AGENT           (agent · model · token usage table)
+    4. est. API COST BY AGENT          (tokens × model price/Mtok; 'n/a' unpriced)
+    5. est. API COST BY PROJECT        (Σ per-agent est. cost)
+
+  A slim headline KPI row (events/24h, active tasks, decisions, recent tokens)
+  is kept above the breakdowns.
+
+  COST NOTE: the CTO is on SUBSCRIPTIONS now, so every cost here is the
+  counterfactual "what it WOULD cost on metered API tokens" (priced from
+  providers.py per-Mtok), NOT a real charge. Real cost arrives with metered
+  per-call telemetry. Token usage is best-effort from /history `token_count`
+  frames (server-capped window) — agents with no frames show "n/a" and are NOT
+  zero-filled. TODO(usage-telemetry) noted in the footnote.
+
+  Context (built in main._analytics_view / _analytics_usage_cost):
+    headline KPIs : an_events_24h, an_active_tasks, an_pending_handoffs,
+                    an_recent_decisions (+ an_window_days), an_decisions_total,
+                    an_handoffs_total, an_lessons_total, an_tokens
+    usage/cost    : an_usage = {
+                      rows[], agent_count, agents_with_usage,
+                      total_tokens(_h), by_model_bars[], by_model_table[],
+                      model_count, by_provider[], by_provider_bars[],
+                      provider_count, cost_rows[], project_cost(_h),
+                      priced_agent_count }
+    an_catalog_priced : did the providers catalog load (pricing available)
+#}
+{% macro stat(label, value, unit="", na_note="n/a") -%}
+  <div class="an-kpi">
+    <div class="an-k-lab">{{ label }}</div>
+    {% if value is not none %}
+    <div class="an-k-val">{{ value }}{% if unit %}<span class="u">{{ unit }}</span>{% endif %}</div>
+    {% else %}
+    <div class="an-k-val is-na">{{ na_note }}</div>
+    {% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro barlist(rows, swatch="var(--accent)") -%}
+  {% if rows %}
+  <ul class="an-bars">
+    {% for r in rows %}
+    <li class="an-bar-row">
+      <span class="an-bar-lab" title="{{ r.label }}">{{ r.label }}</span>
+      <span class="an-bar-track"><i style="width: {{ r.pct }}%; background: {{ swatch }};"></i></span>
+      <span class="an-bar-val">{{ r.value_h }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="an-empty">No usage recorded yet for this project — the breakdown fills in once agent runs write to the usage store.</p>
+  {% endif %}
+{%- endmacro %}
+
+{% if selected %}
+<div class="center on" data-active-view="analytics">
+  <div class="an-wrap">
+
+    {# ---------- header ---------- #}
+    <div class="an-head">
+      <div class="an-title-wrap">
+        <span class="an-tic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l3-4 3 2 4-6"/></svg>
+        </span>
+        <div>
+          <div class="an-title">Usage &amp; Cost</div>
+          <div class="an-sub">
+            <span class="an-live"><span class="pulse" aria-hidden="true"></span> live</span>
+            <span class="an-sep" aria-hidden="true">·</span>
+            <span>{{ selected.display_name or selected.project_key }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="an-head-r">
+        <button
+          type="button"
+          class="hi-refresh"
+          hx-get="/views/analytics?project={{ selected_key }}"
+          hx-target="#center-region"
+          hx-swap="innerHTML"
+          title="Refresh analytics now"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <div class="an-scroll">
+
+      {# ---------- App-DB store status (E007) ----------
+         Usage/cost now read from the App-DB usage_events (separate operational
+         store), NOT Cortex. Two graceful states:
+           * store NOT connected   → the harness-appdb container isn't up.
+           * connected but NO rows  → no agent runs recorded yet.
+         Either way the breakdowns below still render (empty) — never a 500. #}
+      {% if not an_usage.store_connected %}
+      <div class="an-banner" style="border-color: var(--warn, #c98a00); background: rgba(201,138,0,.06);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span>
+          <b>Usage store not connected.</b> The App-DB (<code>harness-appdb</code>) isn't reachable, so usage &amp; cost can't be read.
+          The console + chat keep working — runs are simply not recorded until the store is up. Bring it up with
+          <code>docker compose -f .agents/docker-compose.cortex.yml up -d harness-appdb</code> and apply the schema.
+        </span>
+      </div>
+      {% elif an_usage.total_runs == 0 %}
+      <div class="an-banner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span>
+          <b>No usage recorded yet.</b> The usage store is connected but has no rows for this project yet —
+          <b>agent runs will populate this</b>. Each chat / dispatch run writes its token usage + estimated cost here.
+        </span>
+      </div>
+      {% endif %}
+
+      {# ---------- HEADLINE KPI ROW (slim) ---------- #}
+      <div class="an-kpi-row">
+        {{ stat("Events · 24h", an_events_24h) }}
+        {{ stat("Active tasks", an_active_tasks) }}
+        {{ stat("Decisions · " ~ an_window_days ~ "d", an_recent_decisions) }}
+        {{ stat("Tokens · recent", an_tokens.total_h if an_tokens.total else none, na_note="n/a") }}
+      </div>
+
+      {# ================= COST HERO ================= #}
+      <div class="an-cost-hero">
+        <div class="an-cost-main">
+          <div class="an-cost-lab">Est. API cost · this project
+            <span class="an-pill-est" title="The CTO is on subscriptions, so this is what the usage WOULD cost on metered API tokens — not a real charge.">est.</span>
+          </div>
+          <div class="an-cost-val {% if an_usage.project_cost is none %}is-na{% endif %}">{{ an_usage.project_cost_h }}</div>
+          <div class="an-cost-sub">
+            {% if an_usage.project_cost is not none %}
+              summed across {{ an_usage.priced_agent_count }} agent{{ '' if an_usage.priced_agent_count == 1 else 's' }} with priced usage · {{ an_usage.total_tokens_h }} tokens
+            {% elif not an_usage.store_connected %}
+              usage store not connected — cost is recorded once the App-DB is up
+            {% else %}
+              no usage recorded yet — agent runs will populate this
+            {% endif %}
+          </div>
+        </div>
+        <div class="an-cost-side">
+          <div class="an-cost-stat">
+            <span class="an-cs-lab">Total tokens</span>
+            <span class="an-cs-val">{{ an_usage.total_tokens_h or "n/a" }}</span>
+          </div>
+          <div class="an-cost-stat">
+            <span class="an-cs-lab">Agents w/ usage</span>
+            <span class="an-cs-val">{{ an_usage.agents_with_usage }}<span class="an-cs-of">/ {{ an_usage.agent_count }}</span></span>
+          </div>
+          <div class="an-cost-stat">
+            <span class="an-cs-lab">Models · providers</span>
+            <span class="an-cs-val">{{ an_usage.model_count }}<span class="an-cs-of">· {{ an_usage.provider_count }}</span></span>
+          </div>
+        </div>
+      </div>
+
+      {# subscription / best-effort banner #}
+      <div class="an-banner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span>
+          <b>Estimated</b>, not billed. The team runs on <b>subscriptions</b> today, so cost = per-run token usage priced at each model's per-Mtok rate
+          (or the harness's reported cost) — what it <b>would</b> cost metered. Usage is captured per run into the <b>App-DB</b>; agents with no recorded runs show <b>n/a</b>.
+        </span>
+      </div>
+
+      {# ================= 1 + 2 — usage by model / by model×provider ================= #}
+      <div class="an-grid-2">
+
+        {# 1. total usage BY MODEL #}
+        <div class="an-card">
+          <div class="an-card-h">
+            <span class="an-card-t">Total usage by model</span>
+            <span class="an-card-s">{{ an_usage.model_count }} model{{ '' if an_usage.model_count == 1 else 's' }} · tokens</span>
+          </div>
+          <div class="an-card-b">
+            {{ barlist(an_usage.by_model_bars, "var(--accent)") }}
+            {% if an_usage.by_model_table %}
+            <div class="an-tbl-wrap">
+              <table class="an-tbl">
+                <thead><tr><th>Model</th><th>Provider</th><th class="c-num">Tokens</th></tr></thead>
+                <tbody>
+                  {% for r in an_usage.by_model_table %}
+                  <tr>
+                    <td class="c-model"><code>{{ r.model }}</code></td>
+                    <td class="c-prov">{{ r.provider }}</td>
+                    <td class="c-num">{{ r.tokens_h }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+        {# 2. usage BY MODEL × PROVIDER #}
+        <div class="an-card">
+          <div class="an-card-h">
+            <span class="an-card-t">Usage by provider</span>
+            <span class="an-card-s">model × provider · {{ an_usage.provider_count }} provider{{ '' if an_usage.provider_count == 1 else 's' }}</span>
+          </div>
+          <div class="an-card-b">
+            {{ barlist(an_usage.by_provider_bars, "#5B7A8C") }}
+            {% if an_usage.by_provider %}
+            <div class="an-prov-groups">
+              {% for p in an_usage.by_provider %}
+              <div class="an-prov-grp">
+                <div class="an-prov-grp-h">
+                  <span class="an-prov-name">{{ p.label }}</span>
+                  <span class="an-prov-tot">{{ p.tokens_h }}</span>
+                </div>
+                <ul class="an-prov-models">
+                  {% for m in p.models %}
+                  <li><code title="{{ m.model }}">{{ m.model }}</code><span class="an-pm-tok">{{ m.tokens_h }}</span></li>
+                  {% endfor %}
+                </ul>
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+      </div>
+
+      {# ================= 3 — model usage PER AGENT ================= #}
+      <div class="an-card">
+        <div class="an-card-h">
+          <span class="an-card-t">Model usage per agent</span>
+          <span class="an-card-s">{{ an_usage.agent_count }} agent{{ '' if an_usage.agent_count == 1 else 's' }} · effective model · token usage</span>
+        </div>
+        <div class="an-card-b">
+          {% if an_usage.rows %}
+          <div class="an-tbl-wrap">
+            <table class="an-tbl an-tbl-agents">
+              <thead>
+                <tr>
+                  <th>Agent</th><th>Model</th><th>Provider</th>
+                  <th class="c-num">Tokens</th><th class="c-num">in · out / Mtok</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in an_usage.rows %}
+                <tr>
+                  <td class="c-agent">{{ r.display }}</td>
+                  <td class="c-model">
+                    {% if r.model_known %}<code title="{{ r.model }}">{{ r.model }}</code>
+                    {% else %}<span class="an-na">no model configured</span>{% endif %}
+                  </td>
+                  <td class="c-prov">{{ r.provider or "—" }}</td>
+                  <td class="c-num">
+                    {% if r.tokens is not none %}{{ r.tokens_h }}{% else %}<span class="an-na">n/a</span>{% endif %}
+                  </td>
+                  <td class="c-num c-rate">
+                    {% if r.priced %}{{ r.price_in_h }} · {{ r.price_out_h }}{% else %}<span class="an-na">—</span>{% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="an-empty">No agents resolved for this project.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      {# ================= 4 + 5 — est. cost by agent (+ project total) ================= #}
+      <div class="an-card">
+        <div class="an-card-h">
+          <span class="an-card-t">Est. API cost by agent</span>
+          <span class="an-pill-est" title="Counterfactual metered cost — the CTO is on subscriptions.">est.</span>
+          <span class="an-card-s">tokens × model price · {{ an_usage.priced_agent_count }} priced</span>
+        </div>
+        <div class="an-card-b">
+          {% if an_usage.cost_rows %}
+          <div class="an-tbl-wrap">
+            <table class="an-tbl an-tbl-cost">
+              <thead>
+                <tr>
+                  <th>Agent</th><th>Model</th>
+                  <th class="c-num">Tokens</th><th class="c-num">Est. cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in an_usage.cost_rows %}
+                <tr class="{% if r.cost is none %}is-thin{% endif %}">
+                  <td class="c-agent">{{ r.display }}</td>
+                  <td class="c-model">
+                    {% if r.model_known %}<code title="{{ r.model }}">{{ r.model }}</code>
+                    {% else %}<span class="an-na">—</span>{% endif %}
+                  </td>
+                  <td class="c-num">
+                    {% if r.tokens is not none %}{{ r.tokens_h }}{% else %}<span class="an-na">n/a</span>{% endif %}
+                  </td>
+                  <td class="c-num c-cost">
+                    {% if r.cost is not none %}<b>{{ r.cost_h }}</b>
+                    {% else %}<span class="an-na" title="{{ r.cost_na_reason }}">n/a</span>{% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="3" class="c-foot-lab">Project total · est.</td>
+                  <td class="c-num c-cost c-foot {% if an_usage.project_cost is none %}is-na{% endif %}">{{ an_usage.project_cost_h }}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          {% else %}
+          <p class="an-empty">No agents to cost for this project.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      {# ---------- provenance footnote ---------- #}
+      <div class="an-note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <div>
+          Usage is rolled up from per-run rows in the <b>App-DB</b> (<code>usage_events</code>) — the separate operational store, NOT Cortex
+          (E007 data separation: Cortex stays agent memory + coordination). Each run records its resolved <b>model</b> · <b>provider</b> · token in/out,
+          and an <b>estimated cost</b> (the harness's reported cost, else the run's tokens priced at the model's per-Mtok rate from the
+          <b>Providers &amp; Models</b> catalog — {{ "loaded" if an_catalog_priced else "unavailable — pricing n/a" }}).
+          <b>Cost is an estimate</b> of metered API spend — the team is on <b>subscriptions</b>, so nothing here is billed; it becomes real on metered API tokens.
+          Where a project / agent has no recorded runs, usage and cost show <b>n/a</b> (never fabricated).
+          {# TODO(usage-telemetry): per-harness routing (codex turn.completed.usage etc.) lands token capture for the non-claude lanes; the App-DB schema already carries provider/model/tokens/cost for them. #}
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="center on" data-active-view="analytics">
+  <div class="an-wrap"><p class="empty">Select a project to view its usage &amp; cost analytics.</p></div>
+</div>
+{% endif %}

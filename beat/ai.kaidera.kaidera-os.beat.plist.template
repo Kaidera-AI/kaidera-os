@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+LaunchAgent template: Beat 25-minute heartbeat.
+
+This file is a template. Do not install it directly with launchctl. Render it
+with beat/beatctl install or
+local-cortex/redistributable/scripts/configure-local-cortex-package.sh so the
+absolute paths match the extracted project root on the target Mac.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__PLIST_LABEL__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_ROOT__/beat/launchd-wrapper.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>__START_INTERVAL__</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>AbandonProcessGroup</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/beat/logs/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/beat/logs/launchd.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PROJECT_ROOT__/.agents/scripts:__LOCAL_BIN__:__PYTHON_DIR__:/opt/homebrew/bin:/opt/homebrew/opt/libpq/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PYTHON_BIN</key>
+        <string>__PYTHON_BIN__</string>
+        <key>CORTEX_PROJECT</key>
+        <string>__CORTEX_PROJECT__</string>
+        <key>CORTEX_API_URL</key>
+        <string>__CORTEX_API_URL__</string>
+        <key>CORTEX_ADMIN_TOKEN</key>
+        <string>__CORTEX_ADMIN_TOKEN__</string>
+        <key>BEAT_CORTEX_AGENT</key>
+        <string>__BEAT_CORTEX_AGENT__</string>
+        <key>CORTEX_WORKSPACE_ROOT</key>
+        <string>__PROJECT_ROOT__</string>
+        <key>CORTEX_KEYS_FILE</key>
+        <string>__PROJECT_ROOT__/local-cortex/.env</string>
+        <key>KAIDERA_OS_HERDR_BIN</key>
+        <string>__KAIDERA_OS_HERDR_BIN__</string>
+    </dict>
+</dict>
+</plist>

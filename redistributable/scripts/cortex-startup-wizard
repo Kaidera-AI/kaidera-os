@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Executable wrapper for the Cortex startup wizard."""
+
+from cortex_startup_wizard import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

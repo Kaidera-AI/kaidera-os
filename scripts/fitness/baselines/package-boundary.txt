@@ -1,0 +1,3 @@
+# Baseline for check-package-boundary.sh.
+# One known package-proof file per line.
+# Target: empty. Package payloads live in Kaidera AI turnkey project repos.

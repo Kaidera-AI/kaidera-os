@@ -1,0 +1,33 @@
+{#
+  SETTINGS · Configure per-agent save banner (R4c). Swapped into a row's
+  #cfg-saved-<name> slot after POST /settings/configure. A compact inline
+  confirmation (or error) for that one agent.
+
+  NOTE: the override is saved CONSOLE-LOCAL ONLY (app-DB — the fast display/routing
+  overlay). The registry is NOT touched on save (feature-gap #81, the
+  CTO's reversed decision); committing the config to the Cortex registry is the explicit
+  "Promote to registry" action in the SPA config modal.
+
+  Context:
+    saved          : truthy on a successful persist
+    saved_error    : error string (when the save failed)
+    cfg_agent      : the agent name saved
+    cfg_effective  : the agent's post-save override dict ({} when cleared)
+    cfg_has_override : whether any override remains after the save
+#}
+{% if saved_error %}
+<span class="cfg-saved err" role="alert">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+  Couldn't save — {{ saved_error }}
+</span>
+{% elif saved %}
+<span class="cfg-saved ok" role="status">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+  {% if cfg_has_override %}
+  Override saved locally
+  <span class="cfg-saved-detail">{% for k, v in cfg_effective.items() %}{{ k }}=<code>{{ v }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</span>
+  {% else %}
+  Override cleared — using registry value
+  {% endif %}
+</span>
+{% endif %}

@@ -1,0 +1,59 @@
+<div class="settings-panel">
+  <h2>License & Account</h2>
+
+  {% if entitlements.valid %}
+  <div class="license-info success">
+      <h3>Active License</h3>
+      <p>Customer: {{ entitlements.customer }}</p>
+      {% if entitlements.org_id %}
+      <p>Org ID: {{ entitlements.org_id }}</p>
+      {% endif %}
+      <p>Reason: {{ entitlements.reason }}</p>
+      {% if entitlements.wallet %}
+      <p>Wallet Balance: {{ entitlements.wallet.balance }} {{ entitlements.wallet.currency }}</p>
+      {% endif %}
+  </div>
+  {% else %}
+  <div class="license-info error">
+      <h3>Free Tier / Unlicensed</h3>
+      <p>Reason: {{ entitlements.reason }}</p>
+  </div>
+  {% endif %}
+
+  <div class="device-info">
+      <p>Install ID: {{ install_id }}</p>
+      <p>Machine Fingerprint: {{ machine_fp }}</p>
+  </div>
+
+  <div class="actions">
+      <h3>Login to Kaidera AI</h3>
+      <div id="login-container">
+          <button hx-post="/settings/license/login/start" hx-target="#login-container" class="btn btn-primary">
+              Log In (Device Auth)
+          </button>
+      </div>
+
+      <h3>Refresh License</h3>
+      <button hx-post="/settings/license/refresh" hx-target="#settings-body" class="btn">
+          Refresh Now
+      </button>
+      {% if refresh_error %}
+      <p class="error">{{ refresh_error }}</p>
+      {% endif %}
+      {% if refresh_success %}
+      <p class="success">License refreshed successfully.</p>
+      {% endif %}
+
+      <h3>Offline Grant Import</h3>
+      <form hx-post="/settings/license/import" hx-target="#settings-body" enctype="multipart/form-data">
+          <input type="file" name="grant_file" accept=".txt,.json,.grant" required>
+          <button type="submit" class="btn">Import Grant</button>
+      </form>
+      {% if import_error %}
+      <p class="error">{{ import_error }}</p>
+      {% endif %}
+      {% if import_success %}
+      <p class="success">License grant imported successfully.</p>
+      {% endif %}
+  </div>
+</div>

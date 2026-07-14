@@ -1,0 +1,62 @@
+{#
+  WORKSPACE FILE VIEWER — read-only file content (LEGACY fragment).
+
+  Rendered by GET /workspace/{key}/file. NOTE: this in-column viewer is no longer
+  wired into the live UI — clicking a tree file now opens the file in the CENTER
+  pane (preview + edit) via openWsFile, matching the prototype. This fragment +
+  its route are retained as a stable read-only JSON-free HTML view of a file but
+  are not reachable from the tree. (No "Edit" button here — editing happens in
+  the center pane.)
+
+  States:
+    - no file selected (initial)      → a hint to pick a file
+    - ws_error (escape / missing)     → a clean error panel (NEVER the file)
+    - binary file                     → "binary file — N bytes" notice
+    - large file (truncated)          → content + a "truncated" banner
+    - text file                       → monospace body with a line-number gutter
+
+  Vars:
+    file      : workspace.read_file() dict, or None
+    ws_error  : error message when the read was rejected/failed
+    ws_path   : the rel-path that was requested (for the error header)
+#}
+{% if ws_error %}
+  <div class="fv-head">
+    <span class="fv-name">{{ ws_path or 'file' }}</span>
+  </div>
+  <div class="fv-notice fv-notice--err" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+    <span>{{ ws_error }}</span>
+  </div>
+{% elif not file %}
+  <div class="fv-empty">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    <span>Select a file to view its contents</span>
+  </div>
+{% else %}
+  <div class="fv-head">
+    <span class="fv-name" title="{{ file.rel_path }}">{{ file.rel_path }}</span>
+    <span class="fv-meta">
+      {% if file.binary %}binary{% elif file.lines is not none %}{{ file.lines }} line{{ '' if file.lines == 1 else 's' }}{% endif %}
+      · {{ file.size }} B
+    </span>
+  </div>
+  {% if file.binary %}
+    <div class="fv-notice">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h.01M15 9h.01M9 15h6"/></svg>
+      <span>binary file — {{ file.size }} bytes</span>
+    </div>
+  {% else %}
+    {% if file.truncated %}
+    <div class="fv-banner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      <span>large file — showing the first 256 KB of {{ file.size }} bytes</span>
+    </div>
+    {% endif %}
+    <div class="fv-body">
+      <pre class="fv-gutter" aria-hidden="true">{% for n in range(1, (file.lines or 1) + 1) %}{{ n }}
+{% endfor %}</pre>
+      <pre class="fv-code">{{ file.content }}</pre>
+    </div>
+  {% endif %}
+{% endif %}
