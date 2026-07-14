@@ -73,8 +73,11 @@ def test_cache_round_trips(tmp_cache):
 
 
 def test_resolve_embed_target_passes_runtime_config_to_base_url(monkeypatch):
-    cfg = {"MANIFOLD_BASE_URL": "https://edge.example/v1"}
-    customs = {"custom:qa": {"base_url": "https://custom.example/v1"}}
+    cfg = {
+        "kaidera_manifold_base_url": "https://edge.example/v1",
+        "kaidera_manifold_project_id": "project-123",
+    }
+    customs = {}
     resolver = object()
     seen = {}
 
@@ -87,7 +90,7 @@ def test_resolve_embed_target_passes_runtime_config_to_base_url(monkeypatch):
         harness_runner,
         "_own_target",
         lambda model, actual_cfg, actual_customs, actual_resolver: (
-            "custom:qa",
+            "kaidera-manifold",
             "embed-model",
             "test-key",
         ),
@@ -95,17 +98,19 @@ def test_resolve_embed_target_passes_runtime_config_to_base_url(monkeypatch):
 
     def base_url(provider, actual_customs, actual_cfg):
         seen.update(provider=provider, customs=actual_customs, cfg=actual_cfg)
-        return "https://custom.example/v1"
+        return "https://edge.example/v1"
 
     monkeypatch.setattr(harness_runner, "_agent_base_url", base_url)
-    monkeypatch.setenv("KAIDERA_EMBED_MODEL", "custom:qa/embed-model")
+    monkeypatch.setattr(harness_runner, "_manifold_project_id", lambda actual_cfg: "project-123")
+    monkeypatch.setenv("KAIDERA_EMBED_MODEL", "embed-model")
 
     assert skill_embed._resolve_embed_target() == (
         "embed-model",
         "test-key",
-        "https://custom.example/v1",
+        "https://edge.example/v1",
+        "project-123",
     )
-    assert seen == {"provider": "custom:qa", "customs": customs, "cfg": cfg}
+    assert seen == {"provider": "kaidera-manifold", "customs": customs, "cfg": cfg}
 
 
 def test_cache_missing_file_is_empty(tmp_cache):
@@ -452,14 +457,15 @@ class _FakeResp:
 
 
 def _capture_embed_post(monkeypatch, model_name):
-    """Point _resolve_embed_target at a fake (model, key, base) and monkeypatch
+    """Point _resolve_embed_target at a fake Manifold target and monkeypatch
     httpx.Client.post to RECORD the JSON payload (no network). Returns the capture dict."""
     monkeypatch.setattr(skill_embed, "_resolve_embed_target",
-                        lambda: (model_name, "fake-key", "https://fake.example/v1"))
+                        lambda: (model_name, "fake-key", "https://fake.example/v1", "project-123"))
     captured: dict = {}
 
     def _fake_post(self, url, headers=None, json=None, **kw):
         captured["url"] = url
+        captured["headers"] = headers
         captured["json"] = json
         return _FakeResp(len(json.get("input", [])))
 
@@ -474,6 +480,7 @@ def test_nomic_query_prefix_added(monkeypatch):
     out = skill_embed.embed_texts(["read a website"], kind="query")
     assert out is not None
     assert cap["json"]["input"] == ["search_query: read a website"]
+    assert cap["headers"]["X-Project-Id"] == "project-123"
 
 
 def test_nomic_document_prefix_added(monkeypatch):
@@ -555,8 +562,10 @@ def test_semantic_smoke_when_key_present():
     'read a website' query is semantically closer to a browser/page-testing skill than a
     'fix a database' query. Skips cleanly (no failure) when no key resolves — the VM run
     will exercise the live path."""
+    if os.environ.get("KAIDERA_RUN_LIVE_MANIFOLD_TESTS") != "1":
+        pytest.skip("set KAIDERA_RUN_LIVE_MANIFOLD_TESTS=1 for the live Manifold check")
     if skill_embed._resolve_embed_target() is None:
-        pytest.skip("no embed key locally — will verify on the VM")
+        pytest.skip("Manifold embedding configuration is incomplete")
     skill_text = "automate browser interactions, test web pages"
     vecs = skill_embed.embed_texts(["read a website", "fix a database", skill_text])
     assert vecs is not None and len(vecs) == 3, "live embeddings should return 3 vectors"

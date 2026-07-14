@@ -27,8 +27,8 @@ LAYER RULE (arrows point inward, ratified design §3): this module depends ONLY 
 NOTHING outward (no fastapi / httpx / subprocess / psycopg2 / asyncpg) and never
 reaches back into `app.main`, the concrete `app.appdb` / `app.adapters`, or the
 legacy `app.settings` facade. The schema/form rendering + JSON seed/fallback +
-the custom-providers list stay in `app.settings` (they are UI/schema and fallback
-concerns, not port logic); this module owns the port-backed config logic the
+Manifold credential storage stays in `app.settings` (a UI/schema concern); this
+module owns the port-backed config logic the
 System page + the Configure card + the agents catalog all sit on.
 
 The logic is lifted 1:1 from `settings.normalize_designation` /
@@ -67,8 +67,7 @@ SCHEMA_FIELD_TYPES = ("text", "number", "bool", "secret", "readonly", "select")
 
 # Per-model provenance → a short human "freshness" label for the Providers JSON.
 # Mirrors `providers._SOURCE_TAG` (kept here, not imported, so the service stays
-# pure): "live" = fetched live; "merged" = live row + OpenRouter supplement filled
-# gaps; "supplement" = the row's data came from the supplement. Anything else → the
+# pure): "live" = fetched live. Historical provenance labels remain readable. Anything else -> the
 # raw source string verbatim (honest, never fabricated).
 _FRESHNESS_LABEL = {
     "live": "live",
@@ -235,23 +234,8 @@ def _freshness_for(source: Optional[str]) -> str:
     return _FRESHNESS_LABEL.get(s, s)
 
 
-def build_providers_config(
-    built_ins: list[dict[str, Any]], customs: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Shape the Providers tab's CONFIG view: the configured/active providers with
-    per-provider key-presence + status, NEVER a raw key.
-
-    `built_ins` is the list of preconfigured-provider dicts the shell resolves from
-    the catalog/store (each `{name, label, key_is_set, testable, key_field?}`);
-    `customs` is the MASKED custom-provider list (`app.settings.view_custom_providers`
-    shape: `{id, name, base_url, has_key, key_display}` — never a raw api_key).
-
-    Returns `{providers:[{name, label, key_is_set, is_custom, testable, provider_ref,
-    key_field?, base_url?}]}` — the built-ins first (in the order given), then the
-    custom providers. `provider_ref` is the canonical TEST / write target: a built-in
-    provider's secret-key field (e.g. `anthropic_api_key`), or `custom:<id>` for a
-    custom one. PURE: takes the two lists, returns the JSON dict; no I/O, no
-    `app.settings`/`app.providers` import (the shell injects both).
+def build_providers_config(built_ins: list[dict[str, Any]]) -> dict[str, Any]:
+    """Shape the Manifold configuration view without exposing its credential.
 
     MASKING CONTRACT (load-bearing): the builder emits ONLY the documented
     presence/label/ref fields — a raw key on an input dict is dropped, never echoed
@@ -277,23 +261,10 @@ def build_providers_config(
         b_base = b.get("base_url")
         if b_base:
             row["base_url"] = str(b_base)
+        project_id = b.get("project_id")
+        if project_id:
+            row["project_id"] = str(project_id)
         rows.append(row)
-
-    for c in customs or []:
-        cid = str(c.get("id") or "")
-        name = str(c.get("name") or cid)
-        rows.append(
-            {
-                "name": name,
-                "label": name,
-                "key_is_set": bool(c.get("has_key")),
-                "is_custom": True,
-                # a custom provider is testable iff it has a base URL + a key
-                "testable": bool(c.get("has_key")) and bool(c.get("base_url")),
-                "provider_ref": f"custom:{cid}",
-                "base_url": str(c.get("base_url") or ""),
-            }
-        )
 
     return {"providers": rows}
 

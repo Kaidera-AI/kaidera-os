@@ -2279,62 +2279,6 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .cfg-foot .reset { margin-left: auto; font-size: 11px; color: var(--text-3); background: transparent; border: none; cursor: pointer; }
 .cfg-foot .reset:hover { color: var(--text-2); }
 
-/* ---- CUSTOM PROVIDERS (Task 4) — operator-added provider credentials ----
-   A list of {name · base URL · masked key · remove} plus a "+ Add provider"
-   affordance whose inline form is toggled by a pure-CSS hidden checkbox. Lives
-   below the System form; styled to match the .env-* / .cfg-foot language. */
-.set-subhead { margin: 22px 0 10px; padding-top: 16px; border-top: 1px solid var(--line); }
-.set-subhead .ssh-t { display: block; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.set-subhead .ssh-s { display: block; font-size: 11px; color: var(--text-3); margin-top: 2px; line-height: 1.5; }
-
-.cp-region { display: block; }
-.cp-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.cp-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
-  background: var(--surface);
-}
-.cp-row .cp-ic { width: 16px; height: 16px; color: var(--accent); flex: none; display: grid; place-items: center; }
-.cp-row .cp-ic svg { width: 14px; height: 14px; }
-.cp-row .cp-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
-.cp-row .cp-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cp-row .cp-url { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cp-row .cp-key { font-family: var(--mono); font-size: 11px; flex: none; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line); }
-.cp-row .cp-key.set { color: var(--text-3); letter-spacing: 1px; }
-.cp-row .cp-key.none { color: var(--text-3); opacity: .7; }
-.cp-row .cp-del {
-  flex: none; width: 26px; height: 26px; border-radius: var(--r-sm);
-  display: grid; place-items: center; color: var(--text-3);
-  border: 1px solid transparent; background: transparent; cursor: pointer;
-  transition: background .12s, color .12s, border-color .12s;
-}
-.cp-row .cp-del:hover { background: var(--danger-bg, rgba(220,70,70,.10)); color: var(--danger, #d24a4a); border-color: var(--danger-line, rgba(220,70,70,.3)); }
-.cp-row .cp-del svg { width: 14px; height: 14px; }
-.cp-empty { font-size: 11.5px; color: var(--text-3); padding: 8px 0 12px; }
-
-/* "+ Add provider" toggle button (label for the hidden checkbox) */
-.cp-add-toggle { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
-.cp-add-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600; color: var(--accent);
-  padding: 7px 12px; border: 1px dashed var(--accent-line); border-radius: var(--r-sm);
-  background: var(--accent-bg); cursor: pointer; transition: .12s;
-}
-.cp-add-btn:hover { background: var(--accent-bg-2); }
-.cp-add-btn svg { width: 14px; height: 14px; }
-/* the inline add form is hidden until the toggle is checked */
-.cp-add-form { display: none; margin-top: 12px; gap: 10px; flex-direction: column;
-  padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
-.cp-add-toggle:checked ~ .cp-add-btn { display: none; }
-.cp-add-toggle:checked ~ .cp-add-form { display: flex; }
-.cp-field { display: flex; flex-direction: column; gap: 4px; }
-.cp-field .cp-lbl { font-size: 11px; font-weight: 600; color: var(--text-2); }
-.cp-add-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.cp-add-actions .save { background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; padding: 8px 16px; border-radius: var(--r-sm); border: none; cursor: pointer; transition: background .12s; }
-.cp-add-actions .save:hover { background: var(--accent-hover); }
-.cp-add-actions .cancel { font-size: 12px; color: var(--text-2); padding: 8px 14px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface); cursor: pointer; transition: .12s; }
-.cp-add-actions .cancel:hover { color: var(--text); border-color: var(--line-strong); }
-
 /* settings sub-nav collapses under the same breakpoint as the agent panes */
 @media (max-width: 720px) {
   .set-split { grid-template-columns: 1fr; }
@@ -2345,12 +2289,9 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 
 /* ============================================================
-   R4b · PROVIDERS & MODELS (read-only dynamic catalog)
-   A grouped, read-only catalog of every model each configured
-   provider offers. OpenRouter's public list is always fetched
-   (richest source + the pricing supplement); key-configured
-   providers (Anthropic / OpenAI / Fireworks) are live-fetched +
-   merged. Each provider is a heading with its brand mark over a
+   R4b · MANIFOLD MODELS (read-only dynamic catalog)
+   A grouped, read-only catalog of every model the configured
+   Manifold edge exposes. Each provider is a heading over a
    compact model table. Visual language continues the settings
    block (.set-*) using the same brand tokens.
    ============================================================ */

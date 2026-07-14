@@ -29,10 +29,11 @@ reproduction or acceptance check.
 - **Cortex** is the permanent name of the memory and coordination component.
 - Customer projects, generated workers, credentials, runtime databases, chat
   histories, and private paths do not belong in source.
-- The public edition and the separately operated Kaidera AI enterprise service
-  have distinct deployment and licensing boundaries.
-- Source checkouts remain unbaked for provider integration testing. Public release
-  packaging owns the tested edition-bake step and generated edition marker.
+- The open-source runtime and the separately distributed commercial product have
+  distinct source, deployment, and licensing boundaries.
+- Source checkouts and release archives are Manifold-only. Direct provider
+  adapters, runtime license activation, and native commercial applications do not
+  belong in this repository.
 - Distribution-channel changes belong in
   [`Kaidera-AI/homebrew-kaidera`](https://github.com/Kaidera-AI/homebrew-kaidera).
 

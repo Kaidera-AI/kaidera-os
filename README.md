@@ -4,7 +4,6 @@
 
 Open-source local control plane for AI worker teams, powered by Cortex.
 
-**[Download for macOS](https://kaidera.ai/downloads/kaidera-os/macos)** |
 **[Documentation](https://docs.kaidera.ai)** |
 **[Contribute](CONTRIBUTING.md)** |
 **[Enterprise](https://kaidera.ai/for-enterprise)**
@@ -15,9 +14,10 @@ without losing project context. It runs locally, keeps project boundaries
 explicit, and gives operators one surface for workers, handoffs, run state,
 provider configuration, and approvals.
 
-This repository is the public community source for Kaidera OS. Installable
-artifacts and package launchers live in
-[`Kaidera-AI/homebrew-kaidera`](https://github.com/Kaidera-AI/homebrew-kaidera).
+This repository is the public community source and release home for Kaidera OS.
+The separate
+[`Kaidera-AI/homebrew-kaidera`](https://github.com/Kaidera-AI/homebrew-kaidera)
+repository is a thin Homebrew and npm delivery layer.
 
 ## What it does
 
@@ -30,9 +30,9 @@ artifacts and package launchers live in
 - Applies human review and approval gates before consequential actions.
 - Recovers interrupted work from durable state instead of starting over.
 
-The packaged public edition uses the Kaidera Manifold provider surface. Provider
-credentials and license-session tokens stay in local configuration and are never
-part of this repository.
+The open-source edition uses the OpenAI-compatible Kaidera AI Manifold edge.
+Inference credentials stay in local configuration and are never part of this
+repository. Direct third-party provider adapters are not included.
 
 ## How it fits together
 
@@ -41,7 +41,7 @@ flowchart LR
     Operator[Operator and reviewers] --> Console[Kaidera OS console]
     Console --> Orchestrator[Worker orchestration]
     Orchestrator --> Harnesses[Harness adapters]
-    Harnesses --> Providers[Configured providers]
+    Harnesses --> Providers[Kaidera AI Manifold]
     Harnesses <--> Workspace[Project workspaces]
     Orchestrator <--> Cortex[Cortex API]
     Cortex <--> Memory[(Postgres and pgvector)]
@@ -52,13 +52,6 @@ coordination layer, not a product label that changes when Kaidera OS branding
 changes. See [How Kaidera OS works](docs/HOW_IT_WORKS.md) for the full lifecycle.
 
 ## Install
-
-### macOS
-
-Use the signed and notarized installer from the
-[Kaidera OS macOS download page](https://kaidera.ai/downloads/kaidera-os/macos).
-The current DMG release is validated on Apple Silicon and requires macOS 14 or
-newer, Docker, and Python 3.
 
 ### Homebrew
 
@@ -82,19 +75,20 @@ repo=Kaidera-AI/homebrew-kaidera
 curl -fsSL "https://raw.githubusercontent.com/$repo/main/install.sh" | bash
 ```
 
-The package launchers verify the release SHA-256 before extracting the runtime.
-See the [distribution repository](https://github.com/Kaidera-AI/homebrew-kaidera)
-for release assets, checksums, and channel-specific troubleshooting.
+The launchers verify the release SHA-256 before extracting the runtime. Release
+archives, checksums, signatures, and source tags are published from this
+repository. Homebrew formula metadata is maintained in the
+[Kaidera tap](https://github.com/Kaidera-AI/homebrew-kaidera).
 
 ## Develop from source
 
-Prerequisites are Python 3.12, Node.js 22, Docker, and a POSIX shell. On macOS,
-the native operator also requires Swift.
+Prerequisites are Python 3.12, Node.js 22, Docker, and a POSIX shell.
 
 ```sh
 git clone \
   https://github.com/Kaidera-AI/kaidera-os.git
 cd kaidera-os
+./install.sh
 python3 redistributable/scripts/validate-cortex-project-config.py \
   redistributable/examples/blank.project.json
 cd local-cortex/console/spa && npm ci && npm test
@@ -110,11 +104,9 @@ The source tree starts with no customer project, generated worker identity,
 credential, or local Cortex state. First-run configuration creates those items on
 the operator's machine.
 
-A Git checkout resolves to the development edition and exposes the complete local
-provider catalogue for testing. Release packaging performs an explicit,
-test-covered transformation that bakes the redistributable as `public`, writes its
-edition marker, and restricts the packaged provider surface to Manifold. Do not
-commit a baked edition marker back into source.
+Source checkouts and release archives have the same open-source, Manifold-only
+runtime boundary. Release packaging archives the reviewed commit without an
+edition transformation.
 
 ## Repository map
 
@@ -123,7 +115,6 @@ commit a baked edition marker back into source.
 | `.agents/api/` | Cortex API, memory, graph, and coordination services |
 | `local-cortex/console/` | Kaidera OS backend, operator surface, and tests |
 | `local-cortex/console/spa/` | React operator interface |
-| `native/` | Native operator integrations |
 | `redistributable/` | Public schemas, examples, and startup tooling |
 | `scripts/fitness/` | Release, privacy, naming, and package-boundary gates |
 
@@ -158,6 +149,8 @@ support around Kaidera OS and Cortex.
 ## License
 
 Kaidera OS community source is licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE). Contributions are accepted
-under the same license. Kaidera names and logos are not granted for use by the
-software license; see [`NOTICE`](NOTICE).
+[GNU Affero General Public License v3.0 only](LICENSE) and is provided without
+warranty or liability. Contributions are accepted under the same license.
+Kaidera names and logos are not granted for use by the software license; see
+[`NOTICE`](NOTICE). Commercial licensing and support are available from
+[`sales@kaidera.ai`](mailto:sales@kaidera.ai).

@@ -405,11 +405,9 @@ def test_system_save_preserves_provider_keys(monkeypatch):
     from app import settings as settings_store
 
     store = {
-        "fireworks_api_key": "fw_secret_should_survive",
-        "ollama_cloud_api_key": "olc_secret_should_survive",
-        settings_store.CUSTOM_PROVIDERS_KEY: [
-            {"id": "x", "name": "X", "base_url": "https://u", "api_key": "k"}
-        ],
+        "kaidera_manifold_api_key": "mf_secret_should_survive",
+        "kaidera_manifold_base_url": "https://edge.example/v1",
+        "kaidera_manifold_project_id": "project-123",
         "cortex_base_url": "http://localhost:8501",  # a real System-schema field
     }
     written: dict = {}
@@ -419,9 +417,9 @@ def test_system_save_preserves_provider_keys(monkeypatch):
     # A System save that only edits a non-provider field must NOT drop the provider keys.
     settings_store.save({"cortex_base_url": "http://localhost:9999"})
 
-    assert written.get("fireworks_api_key") == "fw_secret_should_survive"  # the fix
-    assert written.get("ollama_cloud_api_key") == "olc_secret_should_survive"
-    assert written.get(settings_store.CUSTOM_PROVIDERS_KEY)  # other side blobs still preserved
+    assert written.get("kaidera_manifold_api_key") == "mf_secret_should_survive"
+    assert written.get("kaidera_manifold_base_url") == "https://edge.example/v1"
+    assert written.get("kaidera_manifold_project_id") == "project-123"
     assert written.get("cortex_base_url") == "http://localhost:9999"  # the actual edit applied
 
 
@@ -793,8 +791,6 @@ def test_write_routes_do_not_collide_with_live_html_posts():
         "/settings/projects/{project_key}/folder",
         "/settings/system",
         "/settings/system/test-key",
-        "/settings/system/custom-provider",
-        "/settings/system/custom-provider/delete",
         "/settings/configure",
     }
     write_posts = {
@@ -807,10 +803,8 @@ def test_write_routes_do_not_collide_with_live_html_posts():
     )
     # … its write leaves are exactly the JSON `{project}/...` shape (single param
     # first segment), distinct from every literal-first live route. (Track C's three
-    # original writes + step-3a's [API]-gap write/probe mirrors — all additive under
-    # the same `{project}/<leaf>` shape; every leaf is a NEW spelling that can't hit a
-    # literal-first live route — e.g. `custom-providers` ≠ the live `system/custom-
-    # provider`, `workspace` ≠ the live `projects/{k}/folder`.)
+    # original writes + the public key-test/workspace mirrors — all additive under
+    # the same `{project}/<leaf>` shape.)
     assert write_posts == {
         "/settings/{project}/flags",
         "/settings/{project}/app",
@@ -819,17 +813,9 @@ def test_write_routes_do_not_collide_with_live_html_posts():
         # `promote` leaf — different trailing segment from the `config` sibling, so it
         # can't shadow it, and still the single-param `{project}/...` shape.
         "/settings/{project}/agents/{agent}/promote",
-            "/settings/{project}/custom-providers",
-            "/settings/{project}/custom-providers/delete",
-            "/settings/{project}/license/login",
-            "/settings/{project}/license/activate",
-            "/settings/{project}/license/heartbeat",
-            "/settings/{project}/license/restore",
-            "/settings/{project}/license/enable",
-            "/settings/{project}/license/expire",
-            "/settings/{project}/provider-key-test",
-            "/settings/{project}/workspace",
-        }
+        "/settings/{project}/provider-key-test",
+        "/settings/{project}/workspace",
+    }
     # EVERY write leaf is the single-param `{project}/...` shape (no literal first
     # segment), so none can shadow a literal-first live HTML POST.
     assert all(p.startswith("/settings/{project}/") for p in write_posts)

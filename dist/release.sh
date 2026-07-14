@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-DEFAULT_REPO="Kaidera-AI/homebrew-kaidera"
+DEFAULT_REPO="Kaidera-AI/kaidera-os"
 REPO="${KAIDERA_REPO:-$DEFAULT_REPO}"
 VERSION="${1:-$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' local-cortex/console/app/version.py | head -1)}"
 [ -n "$VERSION" ] || { echo "could not determine version"; exit 1; }
@@ -18,7 +18,10 @@ OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 
 die() { echo "$*" >&2; exit 1; }
 
-[ -n "$REPO" ] || die "KAIDERA_REPO is required (for example: Kaidera-AI/homebrew-kaidera)."
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || die "invalid version '$VERSION' (expected X.Y.Z)"
+
+[ -n "$REPO" ] || die "KAIDERA_REPO is required (for example: Kaidera-AI/kaidera-os)."
 command -v minisign >/dev/null 2>&1 || die "minisign required (brew install minisign)"
 command -v gh >/dev/null 2>&1       || die "gh required + 'gh auth login'"
 [ -f "$SECKEY" ] || die "no signing key at $SECKEY — run dist/setup-signing.sh first"
@@ -54,9 +57,7 @@ echo "== Building $NAME.tar.gz (git archive @ $(git rev-parse --short HEAD); exp
 STAGE="$OUT/stage"
 mkdir -p "$STAGE"
 git archive --format=tar --prefix="$NAME/" HEAD | tar -xf - -C "$STAGE"
-printf 'public\n' > "$STAGE/$NAME/.kaidera-os-edition"
-python3 "$STAGE/$NAME/scripts/release/bake-public-edition.py" \
-  "$STAGE/$NAME/local-cortex/console/app/edition.py"
+printf 'open-source\n' > "$STAGE/$NAME/.kaidera-os-edition"
 (
   cd "$STAGE/$NAME"
   { find . -type f -print | sed 's#^\./##'; printf 'MANIFEST.txt\n'; } \

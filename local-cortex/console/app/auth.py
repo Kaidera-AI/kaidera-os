@@ -13,7 +13,6 @@ import hmac
 import html
 import json
 import logging
-import math
 import os
 import re
 import secrets
@@ -1212,19 +1211,6 @@ async def create_user(
     existing = await store.get_user_by_email(email)
     if existing:
         return {"ok": True, "user": user_payload(existing)}
-    try:
-        from app import license as lic_mod
-
-        limit = lic_mod.entitlements().limit_for("users")
-        current = await store.count_users()
-        if limit != math.inf and current >= int(limit):
-            raise HTTPException(status_code=403, detail="license_user_limit_reached")
-    except HTTPException:
-        raise
-    except Exception:
-        # Licensing is a fail-closed surface: if the user cap cannot be resolved, only
-        # the existing accounts remain usable until license/auth storage recovers.
-        raise HTTPException(status_code=403, detail="license_user_limit_unavailable")
     user = await store.create_user(
         email,
         role=role,

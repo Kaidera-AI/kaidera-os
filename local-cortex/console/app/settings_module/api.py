@@ -61,15 +61,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import ipaddress
-import socket
 from typing import Any, Awaitable, Callable, Optional, Protocol
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, Depends, Request
 
 from app import auth as auth_module
-from app import platform_config
 from app.domain.ports import ModelCatalogPort, OperationalStorePort
 from app.settings_module import service as settings_service
 from app.settings_module.service import SettingsService
@@ -82,7 +78,6 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 # to the registry / add provider URLs / move the workspace.
 _ADMIN = Depends(auth_module.require_admin_if_auth)
 
-_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal", "metadata"}
 _SETTINGS_IO_LOCK = asyncio.Lock()
 
 
@@ -96,30 +91,6 @@ async def _settings_io(fn: Callable[[], Any]) -> Any:
     """
     async with _SETTINGS_IO_LOCK:
         return await asyncio.to_thread(fn)
-
-
-def _provider_url_blocked(base_url: str) -> Optional[str]:
-    """SSRF guard for an operator-supplied provider `base_url`: block ONLY the
-    cloud-metadata endpoint (the classic SSRF target — 169.254.169.254 / link-local),
-    and ALLOW localhost + private LAN so legitimate local LLM servers (ollama, vLLM,
-    LM Studio) still work. Returns a reason string when blocked, else None."""
-    if not base_url:
-        return None
-    try:
-        host = (urlparse(base_url).hostname or "").lower()
-    except Exception:
-        return "invalid provider URL"
-    if not host:
-        return None
-    if host in _METADATA_HOSTS:
-        return "refusing a cloud-metadata provider URL"
-    try:
-        for info in socket.getaddrinfo(host, None):
-            if ipaddress.ip_address(info[4][0]).is_link_local:  # 169.254/16, fe80::/10
-                return "refusing a link-local (cloud-metadata) provider URL"
-    except Exception:
-        pass  # unresolvable host → let the downstream call fail naturally
-    return None
 
 
 def get_operational_store(request: Request) -> OperationalStorePort:
@@ -156,20 +127,9 @@ def build_service(store: OperationalStorePort) -> SettingsService:
 #    * the System SCHEMA (the field/group/type/secret definitions) — sourced from
 #      the legacy `app.settings` facade (a UI/schema concern), masked by the service.
 #    * the model catalog — the existing `ModelCatalogPort` adapter.
-#    * the custom-provider store — `app.settings`'s add/remove/view helpers.
 #    * the key-test probe — `app.provider_check.test_provider`.
 #    * the repo_root admin client — `app.state.cortex` (the one admin-authed call).
 # ---------------------------------------------------------------------------
-
-
-class CustomProviderStorePort(Protocol):
-    """The narrow custom-provider surface the JSON mirrors need (the SAME methods
-    the legacy `app.settings` facade exposes + the HTML routes use). Add/remove +
-    a MASKED view (the raw api_key never echoed)."""
-
-    def add_custom_provider(self, name: str, base_url: str, api_key: str) -> dict: ...
-    def remove_custom_provider(self, provider_id: str) -> bool: ...
-    def view_custom_providers(self) -> list[dict]: ...
 
 
 class RepoRootClientPort(Protocol):
@@ -217,14 +177,6 @@ def get_model_catalog(request: Request) -> ModelCatalogPort:
     return ProvidersModelCatalog()
 
 
-def get_custom_provider_store() -> CustomProviderStorePort:
-    """Resolve the custom-provider store — the legacy `app.settings` facade
-    (the SAME app-DB-backed store the live HTML custom-provider routes persist into)."""
-    from app import settings as settings_store
-
-    return settings_store
-
-
 def get_provider_config_source() -> ProviderConfigSourcePort:
     """Resolve the built-in-provider config source — the `providers` module (the
     SAME place the catalog reads provider key-presence from the store/env/.env).
@@ -265,7 +217,7 @@ def _raw_editor_settings(settings: dict[str, Any]) -> dict[str, Any]:
     exclusion set lives), which drops the typed SCHEMA fields (shown in the System
     form — no duplication), the provider secrets (owned by the Providers tab), the
     retired keys, and the internal/structural blobs (`agent_overrides`,
-    `custom_providers`, and `_`-prefixed markers like `_designation_seed_applied`). A
+    provider credentials and `_`-prefixed markers like `_designation_seed_applied`). A
     degraded import returns the map unchanged (belt-and-braces — never a 500). The
     STORE is untouched; this is a SURFACE filter only."""
     try:
@@ -742,16 +694,16 @@ async def providers_endpoint(
     except Exception:  # the port shouldn't raise, but degrade to empty if it does
         models = []
     payload = settings_service.group_catalog_models(models)
-    # EDITION gate: in the PUBLIC build the live catalog shows ONLY the visible providers
-    # (Manifold) — so a leftover non-Manifold key can't surface its models here either.
+    # Source boundary: only Manifold rows can reach the public catalog response.
     try:
         from app import providers as _providers_mod
 
         allowed = set(_providers_mod.visible_providers())
-        if allowed != set(_providers_mod.PROVIDER_ORDER):
-            payload["providers"] = [
-                g for g in payload.get("providers", []) if g.get("name") in allowed
-            ]
+        payload["providers"] = [
+            group
+            for group in payload.get("providers", [])
+            if group.get("name") in allowed
+        ]
     except Exception:
         pass
     # #133 — attach each provider's account balance/credits. The balances were computed
@@ -781,37 +733,17 @@ async def providers_config_endpoint(
     project: str,
     store: OperationalStorePort = Depends(get_operational_store),
     cfg_source: ProviderConfigSourcePort = Depends(get_provider_config_source),
-    custom_store: CustomProviderStorePort = Depends(get_custom_provider_store),
 ) -> dict[str, Any]:
-    """`GET /settings/{project}/providers/config` — the CONFIGURED/ACTIVE providers
-    for the Providers control surface: per-provider `{name, label, key_is_set,
-    is_custom, testable, provider_ref, key_field?, base_url?}` — which providers have
-    a key set + a Test target, NEVER a raw key.
-
-    Combines the BUILT-IN providers' key-presence (from `cfg_source.builtin_provider_config`,
-    scored against the durable app_settings rows — falling back to env/.env for the
-    real running config) with the MASKED custom-provider list. This is the data the
-    Providers tab renders so it can be the ONE home for provider keys/config (the
-    System tab + the raw editor no longer carry them).
-
-    The current values come from the store (the durable app_settings rows); a
-    missing/down store still yields the built-in provider list (key-presence resolves
-    via env/.env in the source) + the customs — `store_connected=false`, never a 500.
-    The secret-masking contract holds: only `key_is_set` (a bool) + the masked custom
-    display ever appear. Includes `project` + `store_connected`."""
+    """Return the single Manifold provider without exposing its credential."""
     svc = build_service(store)
-    values, customs, connected = await _settings_io(
-        lambda: (
-            svc.load_app_settings(),
-            _safe_custom_view(custom_store),
-            bool(store.available()),
-        )
-    )  # {} when down → the source falls back to env/.env
+    values, connected = await _settings_io(
+        lambda: (svc.load_app_settings(), bool(store.available()))
+    )
     try:
         built_ins = cfg_source.builtin_provider_config(values)
     except Exception:  # belt-and-braces — the source shouldn't raise; degrade if it does
         built_ins = []
-    payload = settings_service.build_providers_config(built_ins, customs)
+    payload = settings_service.build_providers_config(built_ins)
     payload["project"] = project
     payload["store_connected"] = connected
     return payload
@@ -819,296 +751,19 @@ async def providers_config_endpoint(
 
 @router.get("/{project}/license")
 async def license_status_endpoint(project: str) -> dict[str, Any]:
-    """`GET /settings/{project}/license` — the current license posture for the
-    Settings → License panel: edition, validity, customer/expiry, and the resolved
-    entitlements (unlocked harnesses + capacity caps). Read-only; never the raw token;
-    never raises. DEV reports edition='dev' + all-permissive."""
-    import math
-
-    from app import edition
-    from app import license as lic_mod
-
-    st = lic_mod.license_status()
-    ent = lic_mod.entitlements()
-    advanced = {
-        "manifold_access": ent.has_advanced("manifold_access"),
-    }
+    """Return the AGPL source-license notice; this edition has no runtime license."""
     return {
         "project": project,
-        "edition": edition.edition(),
-        "required": st["required"],
-        "valid": st["valid"],
-        "reason": st["reason"],
-        "customer": st.get("customer"),
-        "expires": st.get("expires"),
-        "features": st.get("features", []),
-        "in_grace": ent.in_grace,
-        "hard_gate": lic_mod.license_gate_status(surface="app"),
-        "all_harnesses": "*" in ent.harnesses,
-        "harnesses": sorted(h for h in ent.harnesses if h != "*"),
-        "advanced": advanced,
-        # JSON can't carry inf — unlimited caps (DEV / :unlimited) report as null.
-        "limits": {k: (None if v == math.inf else int(v)) for k, v in ent.limits.items()},
+        "edition": "open-source",
+        "source_license": "AGPL-3.0-only",
+        "runtime_activation": False,
+        "no_warranty": True,
+        "commercial_contact": "sales@kaidera.ai",
+        "open_source_notice": (
+            "GNU AGPLv3; provided without warranty or liability. "
+            "Commercial support is available from sales@kaidera.ai."
+        ),
     }
-
-
-@router.post("/{project}/license/login")
-async def license_login_endpoint(
-    project: str,
-    payload: dict[str, Any] = Body(default_factory=dict),
-    store: OperationalStorePort = Depends(get_operational_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """Password-login activation against the Kaidera AI platform license surface.
-
-    The platform returns a narrow ``kaidera_os_license_session`` token. The backend stores
-    that token, pulls the signed customer grant, and stores the platform-minted Manifold
-    inference key only when the grant includes ``manifold_access``. Password/MFA values
-    are never persisted or echoed.
-    """
-    from app import license_client
-
-    svc = build_service(store)
-    settings = await _settings_io(lambda: svc.load_app_settings())
-    result = await license_client.login(
-        str(payload.get("email") or ""),
-        str(payload.get("password") or ""),
-        mfa_code=str(payload.get("mfa_code") or "").strip() or None,
-        settings=settings,
-        save_settings=svc.upsert_app_settings,
-    )
-    return {"project": project, **result.to_dict()}
-
-
-@router.post("/{project}/license/activate")
-async def license_activate_endpoint(
-    project: str,
-    payload: dict[str, Any] = Body(default_factory=dict),
-    store: OperationalStorePort = Depends(get_operational_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """Activate this install against the Kaidera AI platform.
-
-    This is the online counterpart to manual token import. It is intentionally soft:
-    platform/network/signature/store failures return `{ok:false,error}` and never
-    block the existing local grant/free tier.
-    """
-    from app import license_client
-
-    svc = build_service(store)
-    settings = await _settings_io(lambda: svc.load_app_settings())
-    result = await license_client.activate(
-        str(payload.get("org_login_token") or ""),
-        settings=settings,
-        save_settings=svc.upsert_app_settings,
-    )
-    return {"project": project, **result.to_dict()}
-
-
-@router.post("/{project}/license/heartbeat")
-async def license_heartbeat_endpoint(
-    project: str,
-    store: OperationalStorePort = Depends(get_operational_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """Refresh the stored grant against the Kaidera AI platform.
-
-    Runs the same soft transport as the future background refresh loop; useful today
-    for "Refresh now" and operator diagnostics before the platform service is live.
-    """
-    from app import license_client
-
-    svc = build_service(store)
-    settings = await _settings_io(lambda: svc.load_app_settings())
-    result = await license_client.heartbeat(
-        settings=settings,
-        save_settings=svc.upsert_app_settings,
-    )
-    return {"project": project, **result.to_dict()}
-
-
-@router.post("/{project}/license/restore")
-@router.post("/{project}/license/enable")
-@router.post("/{project}/license/expire")
-async def license_customer_action_endpoint(
-    project: str,
-    request: Request,
-    store: OperationalStorePort = Depends(get_operational_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """Run a platform customer license action (restore/enable/expire) via the stored
-    license-session token, then refresh the local signed grant/key state."""
-    from app import license_client
-
-    action = request.url.path.rstrip("/").rsplit("/", 1)[-1]
-    svc = build_service(store)
-    settings = await _settings_io(lambda: svc.load_app_settings())
-    result = await license_client.customer_action(
-        action,
-        settings=settings,
-        save_settings=svc.upsert_app_settings,
-    )
-    return {"project": project, **result.to_dict()}
-
-
-@router.get("/{project}/license/releases/{channel}")
-async def license_releases_endpoint(
-    project: str,
-    channel: str,
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """Fetch advisory platform release metadata for the signed update path."""
-    from app import license_client
-
-    result = await license_client.releases(channel)
-    return {"project": project, **result.to_dict()}
-
-
-@router.get("/{project}/billing")
-async def billing_status_endpoint(project: str, request: Request) -> dict[str, Any]:
-    """`GET /settings/{project}/billing` — the Billing tab's view: per-entitlement USAGE
-    (counted live from Cortex) vs the entitled TOTAL, plus the wallet balance + active
-    add-ons from the grant. Read-only; never raises. Buying add-ons / topping up the wallet
-    lives in the Kaidera AI cust-portal (`portal_url`), not here. Teams usage is implicit
-    (one team per project) until teams are first-class."""
-    import math
-
-    from app import edition
-    from app import license as lic_mod
-
-    ent = lic_mod.entitlements()
-    cortex = getattr(request.app.state, "cortex", None)
-
-    projects_used: Optional[int] = None
-    workers_used: Optional[int] = None
-    users_used: Optional[int] = None
-    try:
-        if cortex is not None:
-            projects = await cortex.get_projects() or []
-            projects_used = len([p for p in projects if isinstance(p, dict)])
-            roster = await cortex.get_roster(project) or []
-            workers_used = len([a for a in roster if isinstance(a, dict)])
-    except Exception:
-        pass
-    try:
-        store = auth_module.get_auth_store(request)
-        users_used = int(await store.count_users())
-    except Exception:
-        users_used = None
-
-    def _total(kind: str) -> Optional[int]:
-        v = ent.limit_for(kind)
-        return None if v == math.inf else int(v)
-
-    teams_used = 1 if projects_used else (0 if projects_used == 0 else None)
-    entitlements = [
-        {"kind": "projects", "label": "Projects", "addon": "addon:project",
-         "used": projects_used, "total": _total("projects")},
-        {"kind": "teams", "label": "AI Worker Teams", "addon": "addon:team",
-         "used": teams_used, "total": _total("teams")},
-        {"kind": "workers", "label": "AI Workers", "addon": "addon:worker",
-         "used": workers_used, "total": _total("workers")},
-        {"kind": "users", "label": "Users", "addon": "addon:user",
-         "used": users_used, "total": _total("users")},
-    ]
-    return {
-        "project": project,
-        "edition": edition.edition(),
-        "valid": ent.valid,
-        "in_grace": ent.in_grace,
-        "customer": ent.customer,
-        "wallet": ent.wallet,            # {balance, currency, as_of} or null
-        "addons": list(ent.addons),
-        "harnesses": sorted(h for h in ent.harnesses if h != "*"),
-        "all_harnesses": "*" in ent.harnesses,
-        "entitlements": entitlements,
-        "portal_url": platform_config.portal_url(),
-    }
-
-
-@router.post("/{project}/custom-providers")
-async def custom_provider_add_endpoint(
-    project: str,
-    payload: dict[str, Any] = Body(default_factory=dict),
-    store: CustomProviderStorePort = Depends(get_custom_provider_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """`POST /settings/{project}/custom-providers` — add an operator-defined custom
-    provider (`name` + `base_url` + `api_key`) via the SAME store the live HTML route
-    persists into. Echoes `{project, ok, added, error, custom_providers}` where
-    `custom_providers` is the refreshed MASKED list (the raw api_key is NEVER echoed
-    — `has_key` + a masked display only). A blank name / write failure is a graceful
-    `ok=false` + `error` (never a 500)."""
-    name = str(payload.get("name") or "").strip()
-    base_url = str(payload.get("base_url") or "").strip()
-    api_key = str(payload.get("api_key") or "").strip()
-
-    added: Optional[str] = None
-    error: Optional[str] = None
-    blocked = _provider_url_blocked(base_url)
-    if not name:
-        error = "A provider name is required."
-    elif blocked:
-        error = blocked  # SSRF guard: refuse a cloud-metadata URL before persisting it
-    else:
-        try:
-            entry = await _settings_io(lambda: store.add_custom_provider(name, base_url, api_key))
-            added = entry.get("name") if isinstance(entry, dict) else name
-        except ValueError as exc:
-            error = str(exc)
-        except OSError as exc:
-            error = f"write failed: {exc}"
-        except Exception:  # belt-and-braces — a store hiccup degrades, never 500s
-            error = "couldn't add the provider."
-
-    return {
-        "project": project,
-        "ok": error is None,
-        "added": added,
-        "error": error,
-        "custom_providers": await _settings_io(lambda: _safe_custom_view(store)),
-    }
-
-
-@router.post("/{project}/custom-providers/delete")
-async def custom_provider_delete_endpoint(
-    project: str,
-    payload: dict[str, Any] = Body(default_factory=dict),
-    store: CustomProviderStorePort = Depends(get_custom_provider_store),
-    _admin: Any = _ADMIN,
-) -> dict[str, Any]:
-    """`POST /settings/{project}/custom-providers/delete` — remove a custom provider
-    by `id` (or `name`) via the SAME store the live HTML route uses. Echoes
-    `{project, ok, removed, error, custom_providers}` with the refreshed masked list;
-    `removed` is False when no row matched (still `ok=true` — a no-op, not a crash).
-    A write failure is a graceful `ok=false` + `error` (never a 500)."""
-    provider_id = str(payload.get("id") or payload.get("name") or "").strip()
-
-    removed = False
-    error: Optional[str] = None
-    try:
-        removed = bool(await _settings_io(lambda: store.remove_custom_provider(provider_id)))
-    except OSError as exc:
-        error = f"write failed: {exc}"
-    except Exception:  # belt-and-braces
-        error = "couldn't remove the provider."
-
-    return {
-        "project": project,
-        "ok": error is None,
-        "removed": removed,
-        "error": error,
-        "custom_providers": await _settings_io(lambda: _safe_custom_view(store)),
-    }
-
-
-def _safe_custom_view(store: CustomProviderStorePort) -> list[dict[str, Any]]:
-    """The refreshed MASKED custom-provider list, or [] if the view can't be read
-    (the raw api_key is never in this — the store's view masks it)."""
-    try:
-        return list(store.view_custom_providers())
-    except Exception:  # pragma: no cover - belt-and-braces; the view shouldn't raise
-        return []
 
 
 @router.post("/{project}/provider-key-test")
@@ -1123,8 +778,8 @@ async def provider_key_test_endpoint(
     (`provider_check.test_provider`; lists models / key info — NEVER a completion, so
     it spends no tokens).
 
-    Body: `provider` (a built-in secret-key field like `anthropic_api_key`, or
-    `custom:<id>`) + EITHER `key` (test a freshly-typed key, pre-save feedback) OR
+    Body: `provider=kaidera_manifold_api_key` plus either `key` (test a
+    freshly-typed inference key) or
     nothing / `use_stored:true` (fall back to the stored key, then the env/.env key
     the harness actually runs with). The key is NEVER echoed back — only `ok` + a
     human `detail`. Never a 500 (the probe returns a structured result for every
@@ -1257,23 +912,15 @@ __all__ = [
     "save_agent_config_endpoint",
     "promote_agent_config_endpoint",
     "license_status_endpoint",
-    "license_login_endpoint",
-    "license_activate_endpoint",
-    "license_heartbeat_endpoint",
-    "license_customer_action_endpoint",
-    "billing_status_endpoint",
     "system_schema_endpoint",
     "providers_endpoint",
     "providers_config_endpoint",
-    "custom_provider_add_endpoint",
-    "custom_provider_delete_endpoint",
     "provider_key_test_endpoint",
     "workspace_endpoint",
     "get_operational_store",
     "build_service",
     "get_system_schema",
     "get_model_catalog",
-    "get_custom_provider_store",
     "get_provider_config_source",
     "get_key_test",
     "get_repo_root_client",

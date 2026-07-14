@@ -1,8 +1,4 @@
-"""W1a — the platform-minted Kaidera AI Manifold API-key path + routing.
-
-Layer C: the platform license customer surface mints a Manifold inference key, the app
-stores it in the provider runtime setting, and PUBLIC edition still exposes Manifold only.
-"""
+"""Manifold inference configuration, discovery, and routing."""
 import httpx
 import pytest
 
@@ -165,7 +161,10 @@ async def test_manifold_call_sends_x_project_id_header(monkeypatch):
 @pytest.mark.asyncio
 async def test_manifold_call_fails_closed_without_project_id(monkeypatch):
     monkeypatch.delenv("KAIDERA_MANIFOLD_PROJECT_ID", raising=False)
-    cfg = {"kaidera_manifold_api_key": "mfld_live_v1_test"}  # no project id
+    cfg = {
+        "kaidera_manifold_api_key": "mfld_live_v1_test",
+        "kaidera_manifold_base_url": "https://platform.example/v1",
+    }
     monkeypatch.setattr(hr, "_own_runtime_config", lambda: (cfg, {}, lambda c, k: c.get(k, "")))
     monkeypatch.setattr(
         hr, "_own_target", lambda *a, **k: ("kaidera-manifold", "some-model", "mfld_live_v1_test")
@@ -184,6 +183,7 @@ async def test_manifold_tool_agent_sends_x_project_id_header(monkeypatch):
     captured = {}
     cfg = {
         "kaidera_manifold_api_key": "mfld_live_v1_test",
+        "kaidera_manifold_base_url": "https://platform.example/v1",
         "kaidera_manifold_project_id": "proj-uuid-123",
     }
     monkeypatch.setattr(hr, "_own_runtime_config", lambda: (cfg, {}, lambda c, k: c.get(k, "")))
@@ -219,14 +219,12 @@ async def test_manifold_tool_agent_disables_cleanly_without_project_id(monkeypat
 
 
 def test_public_edition_still_manifold_only(monkeypatch):
-    monkeypatch.setenv("KAIDERA_OS_EDITION", "public")
     assert providers.visible_providers() == ["kaidera-manifold"]
 
 
 def test_own_harness_resolves_manifold_key_and_endpoint():
     setting_key, base_url = hr._OWN_OPENAI_COMPAT_CHAT["kaidera-manifold"]
     assert setting_key == "kaidera_manifold_api_key"
-    assert hr.MANIFOLD_BASE_URL == ""
     assert base_url == ""
     # the platform-minted key resolves through the own-harness provider-key path
     cfg = {"kaidera_manifold_api_key": "mf-test-key"}
@@ -240,10 +238,6 @@ def test_manifold_unconfigured_resolves_empty():
     assert key == ""
 
 
-def test_public_manifold_key_requires_signed_manifold_access(monkeypatch, ed25519_public_license):
-    monkeypatch.setenv("KAIDERA_OS_EDITION", "public")
+def test_public_manifold_key_does_not_require_commercial_entitlement():
     cfg = {"kaidera_manifold_api_key": "mf-test-key"}
-    assert hr._own_provider_key("kaidera-manifold", cfg, {}, lambda c, k: c.get(k, "")) == ""
-
-    ed25519_public_license("Acme", days=365, features=["manifold_access"])
     assert hr._own_provider_key("kaidera-manifold", cfg, {}, lambda c, k: c.get(k, "")) == "mf-test-key"

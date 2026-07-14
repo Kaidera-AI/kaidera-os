@@ -1,7 +1,7 @@
 """Feature-gap step 3a — the SETTINGS JSON endpoints (the `[API]` gaps).
 
 The legacy HTML console exposes the System schema (typed + secret-masked), the live
-Providers&Models catalog, custom-provider add/remove, a per-key Test probe, and the
+Manifold model catalog, a per-key Test probe, and the
 per-project workspace (repo_root) editor — but ALL of those are HTML-only, so the
 React SPA literally can't reach them. This file pins the JSON mirrors the SPA needs
 (`docs/2026-06-06-feature-list-and-gap-analysis.md` §4 + bucket B):
@@ -10,10 +10,8 @@ React SPA literally can't reach them. This file pins the JSON mirrors the SPA ne
                                                   groups), secrets MASKED (never raw).
   2. GET  /settings/{project}/providers         — the live model catalog, grouped by
                                                   provider; graceful-degrade on error.
-  3. POST /settings/{project}/custom-providers          — add (name+base_url+api_key)
-     POST /settings/{project}/custom-providers/delete   — remove by name/id
-  4. POST /settings/{project}/provider-key-test — probe a provider key → {ok, detail}.
-  5. POST /settings/{project}/workspace         — set a project's repo_root via the
+  3. POST /settings/{project}/provider-key-test — probe the Manifold key → {ok, detail}.
+  4. POST /settings/{project}/workspace         — set a project's repo_root via the
                                                   admin path (token NEVER in response).
 
 STRICT TDD + the established settings_module style: the pure service is driven with
@@ -62,49 +60,6 @@ class FakeCatalogPort:
         return ModelPrice(model_id=model_id)
 
 
-class FakeCustomStore:
-    """Stand-in for the custom-provider store (the SAME surface `app.settings`'s
-    custom-provider helpers expose: add / remove / view). In-memory; masks the key
-    in `view` exactly like the legacy settings facade (never echoes the raw api_key)."""
-
-    MASK = "•••• set"
-
-    def __init__(self, existing=None):
-        self._rows = [dict(r) for r in (existing or [])]
-        self.calls: list[tuple[str, tuple]] = []
-
-    def add_custom_provider(self, name, base_url, api_key):
-        self.calls.append(("add", (name, base_url, api_key)))
-        nm = (name or "").strip()
-        if not nm:
-            raise ValueError("a provider name is required")
-        pid = nm.lower().replace(" ", "-")
-        entry = {"id": pid, "name": nm, "base_url": base_url or "", "api_key": api_key or ""}
-        self._rows.append(entry)
-        return entry
-
-    def remove_custom_provider(self, provider_id):
-        self.calls.append(("remove", (provider_id,)))
-        pid = (provider_id or "").strip()
-        kept = [r for r in self._rows if r["id"] != pid]
-        removed = len(kept) != len(self._rows)
-        self._rows = kept
-        return removed
-
-    def view_custom_providers(self):
-        self.calls.append(("view", ()))
-        return [
-            {
-                "id": r["id"],
-                "name": r["name"],
-                "base_url": r.get("base_url", ""),
-                "has_key": bool(r.get("api_key")),
-                "key_display": self.MASK if r.get("api_key") else "",
-            }
-            for r in self._rows
-        ]
-
-
 class FakeKeyTester:
     """Stand-in for `provider_check.test_provider` (async). Returns a scripted
     structured result; records the (field, value) it was probed with so a test can
@@ -112,7 +67,7 @@ class FakeKeyTester:
 
     def __init__(self, result=None):
         self._result = result or {"ok": True, "status": "ok", "message": "key works.",
-                                  "label": "Anthropic"}
+                                  "label": "Kaidera AI Manifold"}
         self.calls: list[tuple] = []
 
     async def __call__(self, field, value=None):
@@ -143,18 +98,18 @@ class FakeRepoRootClient:
 # Realistic scripted catalog rows (the `CatalogModel` shape the adapter emits).
 SAMPLE_MODELS = [
     CatalogModel(
-        provider="anthropic", id="claude-opus-4-8", display_name="Claude Opus 4.8",
+        provider="kaidera-manifold", id="vendor/reasoning", display_name="Reasoning Model",
         type="chat", context_window=200000, max_output=64000,
         reasoning_levels=["low", "medium", "high"],
         price_in_per_mtok=5.0, price_out_per_mtok=25.0, source="merged",
     ),
     CatalogModel(
-        provider="anthropic", id="claude-haiku-4-5", display_name="Claude Haiku 4.5",
+        provider="kaidera-manifold", id="vendor/plain", display_name="Plain Model",
         type="chat", context_window=200000, reasoning_levels=[],
         price_in_per_mtok=1.0, price_out_per_mtok=5.0, source="live",
     ),
     CatalogModel(
-        provider="openai", id="gpt-5.5", display_name="gpt-5.5", type="chat",
+        provider="kaidera-manifold", id="vendor/toggle", display_name="Toggle Model", type="chat",
         reasoning_levels=["supported"], source="supplement",
     ),
 ]
@@ -170,13 +125,13 @@ SAMPLE_SCHEMA = [
         ],
     },
     {
-        "id": "providers", "title": "Provider API keys", "sub": "…", "icon": "<svg/>",
+        "id": "providers", "title": "Manifold", "sub": "…", "icon": "<svg/>",
         "open": True,
         "fields": [
-            {"key": "anthropic_api_key", "label": "Anthropic API key",
-             "type": "secret", "default": "", "hint": "sk-ant-…"},
-            {"key": "fireworks_account_id", "label": "Fireworks account ID",
-             "type": "text", "default": "", "hint": "slug"},
+            {"key": "kaidera_manifold_api_key", "label": "Manifold inference key",
+             "type": "secret", "default": "", "hint": "mfld-…"},
+            {"key": "kaidera_manifold_project_id", "label": "Manifold project ID",
+             "type": "text", "default": "", "hint": "project id"},
         ],
     },
     {
@@ -234,7 +189,7 @@ def test_build_system_schema_shape_and_types():
     out = svc.build_system_schema(
         SAMPLE_SCHEMA,
         {"cortex_base_url": "http://localhost:8501", "poll_interval_secs": 30,
-         "harness_autostart": True, "fireworks_account_id": "my-acct"},
+         "harness_autostart": True, "kaidera_manifold_project_id": "project-123"},
     )
 
     assert set(out) == {"groups"}
@@ -257,7 +212,7 @@ def test_build_system_schema_shape_and_types():
     assert fields["cortex_base_url"]["value"] == "http://localhost:8501"
     assert fields["poll_interval_secs"]["value"] == 30
     assert fields["harness_autostart"]["value"] is True
-    assert fields["fireworks_account_id"]["value"] == "my-acct"
+    assert fields["kaidera_manifold_project_id"]["value"] == "project-123"
 
 
 def test_build_system_schema_masks_secret_value_and_sets_is_set():
@@ -267,9 +222,9 @@ def test_build_system_schema_masks_secret_value_and_sets_is_set():
     from app.settings_module import service as svc
 
     # secret present
-    out = svc.build_system_schema(SAMPLE_SCHEMA, {"anthropic_api_key": SECRET_VALUE})
+    out = svc.build_system_schema(SAMPLE_SCHEMA, {"kaidera_manifold_api_key": SECRET_VALUE})
     fields = {f["key"]: f for g in out["groups"] for f in g["fields"]}
-    sec = fields["anthropic_api_key"]
+    sec = fields["kaidera_manifold_api_key"]
     assert sec["type"] == "secret"
     assert sec["is_set"] is True
     # masked placeholder present; raw secret absent from EVERY value on the field
@@ -278,9 +233,9 @@ def test_build_system_schema_masks_secret_value_and_sets_is_set():
     assert sec.get("placeholder") or sec.get("display")  # some masked marker is shown
 
     # secret absent → is_set False, still no raw value
-    out2 = svc.build_system_schema(SAMPLE_SCHEMA, {"anthropic_api_key": ""})
+    out2 = svc.build_system_schema(SAMPLE_SCHEMA, {"kaidera_manifold_api_key": ""})
     fields2 = {f["key"]: f for g in out2["groups"] for f in g["fields"]}
-    assert fields2["anthropic_api_key"]["is_set"] is False
+    assert fields2["kaidera_manifold_api_key"]["is_set"] is False
 
 
 def test_system_schema_never_leaks_secret_anywhere_in_json():
@@ -293,13 +248,13 @@ def test_system_schema_never_leaks_secret_anywhere_in_json():
 
     out = svc.build_system_schema(
         SAMPLE_SCHEMA,
-        {"anthropic_api_key": SECRET_VALUE, "cortex_base_url": "http://localhost:8501"},
+        {"kaidera_manifold_api_key": SECRET_VALUE, "cortex_base_url": "http://localhost:8501"},
     )
     blob = json.dumps(out)
     assert SECRET_VALUE not in blob
     # and the is_set flag still truthfully reflects the secret IS configured
     fields = {f["key"]: f for g in out["groups"] for f in g["fields"]}
-    assert fields["anthropic_api_key"]["is_set"] is True
+    assert fields["kaidera_manifold_api_key"]["is_set"] is True
 
 
 @pytest.mark.asyncio
@@ -312,7 +267,7 @@ async def test_router_system_schema_endpoint_masks_secret():
     from app.settings_module import api as settings_api
 
     store = FakeOpStore(app_settings={
-        "anthropic_api_key": SECRET_VALUE,
+        "kaidera_manifold_api_key": SECRET_VALUE,
         "cortex_base_url": "http://localhost:8501",
         "poll_interval_secs": 30,
     })
@@ -322,7 +277,7 @@ async def test_router_system_schema_endpoint_masks_secret():
 
     assert result["project"] == "kaidera-os"
     fields = {f["key"]: f for g in result["groups"] for f in g["fields"]}
-    assert fields["anthropic_api_key"]["is_set"] is True
+    assert fields["kaidera_manifold_api_key"]["is_set"] is True
     assert fields["cortex_base_url"]["value"] == "http://localhost:8501"
 
     import json
@@ -342,7 +297,7 @@ async def test_router_system_schema_endpoint_down_store_uses_defaults():
     )
     fields = {f["key"]: f for g in result["groups"] for f in g["fields"]}
     assert fields["cortex_base_url"]["value"] == "http://localhost:8501"  # default
-    assert fields["anthropic_api_key"]["is_set"] is False
+    assert fields["kaidera_manifold_api_key"]["is_set"] is False
     assert result["store_connected"] is False
 
 
@@ -360,18 +315,18 @@ def test_group_catalog_models_shape():
     out = svc.group_catalog_models(SAMPLE_MODELS)
     assert set(out) == {"providers"}
     provs = {p["name"]: p for p in out["providers"]}
-    assert set(provs) == {"anthropic", "openai"}
-    assert len(provs["anthropic"]["models"]) == 2
+    assert set(provs) == {"kaidera-manifold"}
+    assert len(provs["kaidera-manifold"]["models"]) == 3
 
-    opus = next(m for m in provs["anthropic"]["models"] if m["model"] == "claude-opus-4-8")
-    assert opus["type"] == "chat"
-    assert opus["reasoning_tiers"] == ["low", "medium", "high"]
-    assert opus["input_price_per_mtok"] == 5.0
-    assert opus["output_price_per_mtok"] == 25.0
-    assert opus["context_window"] == 200000
-    assert opus["source"] == "merged"
+    model = next(m for m in provs["kaidera-manifold"]["models"] if m["model"] == "vendor/reasoning")
+    assert model["type"] == "chat"
+    assert model["reasoning_tiers"] == ["low", "medium", "high"]
+    assert model["input_price_per_mtok"] == 5.0
+    assert model["output_price_per_mtok"] == 25.0
+    assert model["context_window"] == 200000
+    assert model["source"] == "merged"
     # freshness is a derived human label of the provenance (source), present + non-empty
-    assert isinstance(opus["freshness"], str) and opus["freshness"]
+    assert isinstance(model["freshness"], str) and model["freshness"]
 
 
 def test_group_catalog_models_empty():
@@ -393,7 +348,7 @@ async def test_router_providers_endpoint_shape():
 
     assert result["project"] == "kaidera-os"
     provs = {p["name"]: p for p in result["providers"]}
-    assert set(provs) == {"anthropic", "openai"}
+    assert set(provs) == {"kaidera-manifold"}
     assert "list_models" in catalog.calls
 
 
@@ -411,71 +366,7 @@ async def test_router_providers_endpoint_degrades_on_fetch_error():
 
 
 # ===========================================================================
-#  3. custom-providers — add / delete JSON mirrors (delegate to the store).
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_router_custom_provider_add_delegates_to_store():
-    """`POST /settings/{project}/custom-providers` adds (name+base_url+api_key) via
-    the SAME store the HTML route uses, and returns the refreshed MASKED list (the
-    raw api_key never echoed)."""
-    from app.settings_module import api as settings_api
-
-    store = FakeCustomStore()
-    result = await settings_api.custom_provider_add_endpoint(
-        "kaidera-os",
-        {"name": "MyProv", "base_url": "https://api.myprov.ai/v1", "api_key": "sk-xyz"},
-        store=store,
-    )
-    assert result["ok"] is True
-    assert result["added"] == "MyProv"
-    assert any(c[0] == "add" for c in store.calls)
-    # the refreshed list is masked (has_key true, no raw key)
-    row = next(r for r in result["custom_providers"] if r["name"] == "MyProv")
-    assert row["has_key"] is True
-    import json
-    assert "sk-xyz" not in json.dumps(result)
-
-
-@pytest.mark.asyncio
-async def test_router_custom_provider_add_blank_name_is_error():
-    """A blank name is a graceful error (ok=false + a message), not a 500."""
-    from app.settings_module import api as settings_api
-
-    store = FakeCustomStore()
-    result = await settings_api.custom_provider_add_endpoint(
-        "kaidera-os", {"name": "  ", "base_url": "x", "api_key": "y"}, store=store,
-    )
-    assert result["ok"] is False
-    assert result["error"]
-
-
-@pytest.mark.asyncio
-async def test_router_custom_provider_delete_delegates_to_store():
-    """`POST /settings/{project}/custom-providers/delete` removes by id/name via the
-    store and returns the refreshed list with `removed` reflecting the outcome."""
-    from app.settings_module import api as settings_api
-
-    store = FakeCustomStore(existing=[{"id": "myprov", "name": "MyProv",
-                                       "base_url": "u", "api_key": "k"}])
-    result = await settings_api.custom_provider_delete_endpoint(
-        "kaidera-os", {"id": "myprov"}, store=store,
-    )
-    assert result["ok"] is True
-    assert result["removed"] is True
-    assert any(c[0] == "remove" for c in store.calls)
-    assert result["custom_providers"] == []  # the row is gone
-
-    # deleting an unknown id → removed False (no row matched), still ok (no crash)
-    result2 = await settings_api.custom_provider_delete_endpoint(
-        "kaidera-os", {"id": "nope"}, store=store,
-    )
-    assert result2["removed"] is False
-
-
-# ===========================================================================
-#  4. provider-key-test — JSON mirror of the HTML test-key probe.
+#  3. provider-key-test — JSON mirror of the HTML test-key probe.
 # ===========================================================================
 
 
@@ -487,16 +378,16 @@ async def test_router_provider_key_test_ok():
     from app.settings_module import api as settings_api
 
     tester = FakeKeyTester(result={"ok": True, "status": "ok",
-                                   "message": "Anthropic key works.", "label": "Anthropic"})
+                                   "message": "Manifold key works.", "label": "Kaidera AI Manifold"})
     result = await settings_api.provider_key_test_endpoint(
-        "kaidera-os", {"provider": "anthropic_api_key", "key": "sk-ant-typed"},
+        "kaidera-os", {"provider": "kaidera_manifold_api_key", "key": "mfld-typed"},
         key_test=tester,
     )
     assert result["ok"] is True
     assert "works" in result["detail"]
     # the probe was called with the field + the typed key
-    assert tester.calls and tester.calls[0][0] == "anthropic_api_key"
-    assert tester.calls[0][1] == "sk-ant-typed"
+    assert tester.calls and tester.calls[0][0] == "kaidera_manifold_api_key"
+    assert tester.calls[0][1] == "mfld-typed"
 
 
 @pytest.mark.asyncio
@@ -505,10 +396,10 @@ async def test_router_provider_key_test_fail():
     from app.settings_module import api as settings_api
 
     tester = FakeKeyTester(result={"ok": False, "status": "rejected",
-                                   "message": "Anthropic rejected the key (HTTP 401).",
-                                   "label": "Anthropic"})
+                                   "message": "Manifold rejected the key (HTTP 401).",
+                                   "label": "Kaidera AI Manifold"})
     result = await settings_api.provider_key_test_endpoint(
-        "kaidera-os", {"provider": "anthropic_api_key"}, key_test=tester,
+        "kaidera-os", {"provider": "kaidera_manifold_api_key"}, key_test=tester,
     )
     assert result["ok"] is False
     assert "rejected" in result["detail"].lower()
@@ -517,7 +408,7 @@ async def test_router_provider_key_test_fail():
 
 
 # ===========================================================================
-#  5. workspace — set a project's repo_root via the admin path (token-safe).
+#  4. workspace — set a project's repo_root via the admin path (token-safe).
 # ===========================================================================
 
 
@@ -596,7 +487,7 @@ async def test_router_workspace_admin_token_missing_is_graceful():
 
 
 def test_new_json_routes_registered_and_collision_free():
-    """The five new JSON routes live under the module's `/settings/{project}/...`
+    """The public JSON routes live under the module's `/settings/{project}/...`
     JSON shape (so they can't shadow the one-segment HTML `GET /settings/{page}`),
     and NONE collides with a live HTML `POST /settings/...` route (which all carry a
     LITERAL first segment under /settings/ — `system`, `system/...`, `projects/...`,
@@ -604,21 +495,19 @@ def test_new_json_routes_registered_and_collision_free():
     from app.settings_module.api import router
 
     paths = {r.path for r in router.routes}
-    # the five new leaves
+    # Public source leaves: no custom-provider or commercial activation routes.
     assert "/settings/{project}/system-schema" in paths
     assert "/settings/{project}/providers" in paths
-    assert "/settings/{project}/custom-providers" in paths
-    assert "/settings/{project}/custom-providers/delete" in paths
     assert "/settings/{project}/provider-key-test" in paths
     assert "/settings/{project}/workspace" in paths
+    assert not any("custom-providers" in path for path in paths)
+    assert not any("license/login" in path for path in paths)
 
     # NONE of the live HTML POST /settings/... routes is claimed (literal-first).
     live_html_settings_posts = {
         "/settings/projects/{project_key}/folder",
         "/settings/system",
         "/settings/system/test-key",
-        "/settings/system/custom-provider",
-        "/settings/system/custom-provider/delete",
         "/settings/configure",
     }
     assert not (paths & live_html_settings_posts)
@@ -628,8 +517,7 @@ def test_new_json_routes_registered_and_collision_free():
 
 
 def test_new_routes_methods():
-    """system-schema + providers are GETs; custom-providers (+/delete), key-test, and
-    workspace are POSTs (the write/probe mirrors)."""
+    """System schema and providers are GETs; key-test and workspace are POSTs."""
     from app.settings_module.api import router
 
     def methods_for(path):
@@ -640,8 +528,6 @@ def test_new_routes_methods():
 
     assert "GET" in methods_for("/settings/{project}/system-schema")
     assert "GET" in methods_for("/settings/{project}/providers")
-    assert "POST" in methods_for("/settings/{project}/custom-providers")
-    assert "POST" in methods_for("/settings/{project}/custom-providers/delete")
     assert "POST" in methods_for("/settings/{project}/provider-key-test")
     assert "POST" in methods_for("/settings/{project}/workspace")
 
@@ -652,7 +538,7 @@ def test_service_still_imports_nothing_outward_after_additions():
     psycopg2 / asyncpg) and does NOT reach for app.main / the concrete appdb /
     adapters / the legacy app.settings facade — only the domain port + stdlib.
 
-    The new I/O (catalog fetch, key-test probe, custom-provider store, repo_root
+    The new I/O (catalog fetch, key-test probe, repo_root
     admin PATCH) lives in `api.py` (the shell), injected into the pure helpers, so
     the module-isolation contract holds."""
     import ast

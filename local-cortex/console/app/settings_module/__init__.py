@@ -12,7 +12,7 @@ PACKAGE NAME NOTE: the package is `app.settings_module`, NOT `app.settings`, bec
 still use — imported as `settings_store` in `main.py`); a Python package
 `app/settings/` cannot coexist with the module file `app/settings.py`. Naming the
 carved module `settings_module` keeps the carve strictly ADDITIVE — `app.settings`
-(the schema/form/custom-providers plus JSON seed/fallback concerns) is untouched
+(the schema/form plus JSON seed/fallback concerns) is untouched
 and keeps working; this module is the clean port-backed path for the config LOGIC.
 The import-linter independence contract pins it as `app.settings_module`.
 

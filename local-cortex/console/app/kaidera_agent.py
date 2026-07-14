@@ -277,14 +277,9 @@ class KaideraTools:
 
 
 def _build_model(provider: str, model: str, api_key: str, base_url: str) -> Any:
-    """Construct the Pydantic AI model for the resolved provider."""
-    if provider == "anthropic":
-        from pydantic_ai.models.anthropic import AnthropicModel
-        from pydantic_ai.providers.anthropic import AnthropicProvider
-        return AnthropicModel(model, provider=AnthropicProvider(api_key=api_key))
-    # Everything else is OpenAI-compatible (fireworks / openrouter / groq /
-    # ollama-cloud / openai / custom / …): one chat-completions shape, one provider
-    # class with a custom base_url + api_key.
+    """Construct the public edition's Manifold-backed Pydantic AI model."""
+    if provider != "kaidera-manifold":
+        raise ValueError(f"unsupported provider: {provider}")
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
     return OpenAIChatModel(model, provider=OpenAIProvider(base_url=base_url, api_key=api_key))
@@ -295,17 +290,10 @@ def _apply_reasoning_settings(
     provider: str,
     reasoning_fields: dict[str, Any] | None,
 ) -> None:
-    """Apply already-validated native reasoning fields to Pydantic AI settings."""
+    """Apply Manifold-validated reasoning fields to Pydantic AI settings."""
+    if provider != "kaidera-manifold":
+        raise ValueError(f"unsupported provider: {provider}")
     fields = dict(reasoning_fields or {})
-    if not fields:
-        return
-    if provider == "anthropic":
-        thinking = fields.pop("thinking", None)
-        effort = fields.pop("reasoning_effort", None)
-        if thinking is not None:
-            model_settings["anthropic_thinking"] = thinking
-        if effort is not None:
-            model_settings["anthropic_effort"] = effort
     if fields:
         model_settings["extra_body"] = fields
 

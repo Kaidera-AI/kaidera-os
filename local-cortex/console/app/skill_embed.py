@@ -17,16 +17,13 @@ ANY exception) the public functions return ``None`` so the caller falls back to
 the existing keyword selector. A worker's routing must NEVER be broken by an
 embedding outage — semantic is a bonus on top of the proven keyword path.
 
-PROVIDER PLUMBING — reuse the console's own resolver
-----------------------------------------------------
+MANIFOLD PLUMBING
+-----------------
 We mirror the shape of Cortex's ``embed_text`` (api/main.py): an OpenAI-compatible
 ``POST {base}/embeddings`` with ``{"model": …, "input": …}`` and a Bearer key,
-reading ``data[*].embedding``. The provider/model/key/base-URL are resolved through
-the SAME console plumbing the kaidera chat lane uses — ``_own_runtime_config`` /
-``_own_target`` / ``_agent_base_url`` in ``harness_runner`` — so an operator who has
-configured (say) OpenRouter for chat automatically has embeddings too, with no new
-config. The default model ``openrouter/openai/text-embedding-3-small`` resolves via
-that table to ``https://openrouter.ai/api/v1/embeddings`` (== the Cortex endpoint).
+reading ``data[*].embedding``. The model, inference key, project id, and base URL
+use the same Manifold settings as chat. No direct provider credentials are loaded
+by this module.
 
 SYNC by design: ``_select_skills`` is a sync function on the worker's hot path, so
 this module is sync (httpx.Client, not AsyncClient).
@@ -51,18 +48,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
-# Embedding-model CANDIDATES, tried in order — the FIRST whose provider has a configured
-# key wins, so the embed provider AUTO-DETECTS on any deploy (OpenAI / Fireworks /
-# Ollama-cloud / OpenRouter) with no per-deploy config. KAIDERA_EMBED_MODEL prepends an
-# override. Mirrors how the chat lane resolves a provider from a model prefix — a fresh
-# box configured with ANY of these for chat automatically gets embeddings too.
-_EMBED_MODEL_CANDIDATES = (
-    "openai/text-embedding-3-small",             # direct OpenAI, or via the OpenRouter fallback
-    "fireworks/nomic-ai/nomic-embed-text-v1.5",  # Fireworks (768-d)
-    "ollama-cloud/nomic-embed-text",             # Ollama-cloud
-    "openrouter/openai/text-embedding-3-small",  # explicit OpenRouter
-)
-_DEFAULT_EMBED_MODEL = _EMBED_MODEL_CANDIDATES[0]  # kept for back-compat / tests
+_DEFAULT_EMBED_MODEL = "openai/text-embedding-3-small"
 
 # Network + payload bounds. The embeddings endpoint is a single batched call, so a
 # modest timeout is plenty; we never block the worker's hot path for long. Inputs
@@ -73,43 +59,29 @@ _INPUT_CHAR_CAP = 1000
 
 def _default_embed_model() -> str:
     """The embedding model to use: ``KAIDERA_EMBED_MODEL`` when set (non-blank),
-    else the OpenRouter text-embedding-3-small default."""
+    else the Manifold-routed text-embedding-3-small default."""
     return (os.environ.get("KAIDERA_EMBED_MODEL", "").strip() or _DEFAULT_EMBED_MODEL)
 
 
-def _resolve_embed_target() -> Optional[tuple[str, str, str]]:
-    """Resolve ``(native_model, api_key, base_url)`` for the embeddings call, reusing
-    the console's existing provider plumbing — or ``None`` when embeddings can't run.
-
-    Mirrors the kaidera chat lane: ``_own_runtime_config`` loads provider keys +
-    custom providers, ``_own_target`` maps the configured embed model to a
-    ``(provider, native_model, api_key)`` triple (with the OpenRouter fallback), and
-    ``_agent_base_url`` gives the OpenAI-compatible base (no ``/chat/completions``).
-
-    Returns ``None`` if no API key resolves (provider not configured) or the base URL
-    is empty, and on ANY exception — so the caller degrades to the keyword selector.
-    """
+def _resolve_embed_target() -> Optional[tuple[str, str, str, str]]:
+    """Resolve ``(model, key, base_url, project_id)`` for Manifold embeddings."""
     try:
         from .harness_runner import (
             _agent_base_url,
+            _manifold_project_id,
             _own_runtime_config,
             _own_target,
         )
 
         cfg, customs, resolver = _own_runtime_config()
-        override = os.environ.get("KAIDERA_EMBED_MODEL", "").strip()
-        candidates = ([override] if override else []) + list(_EMBED_MODEL_CANDIDATES)
-        for model in candidates:
-            try:
-                provider, native_model, api_key = _own_target(model, cfg, customs, resolver)
-            except Exception:
-                continue
-            if not api_key:
-                continue
-            base_url = _agent_base_url(provider, customs, cfg)
-            if base_url:
-                return native_model, api_key, base_url
-        return None
+        provider, native_model, api_key = _own_target(
+            _default_embed_model(), cfg, customs, resolver
+        )
+        base_url = _agent_base_url(provider, customs, cfg)
+        project_id = _manifold_project_id(cfg)
+        if not api_key or not base_url or not project_id:
+            return None
+        return native_model, api_key, base_url, project_id
     except Exception:
         return None
 
@@ -152,7 +124,7 @@ def embed_texts(texts: list[str], kind: str = "document") -> Optional[list[list[
     target = _resolve_embed_target()
     if target is None:
         return None
-    model, api_key, base_url = target
+    model, api_key, base_url, project_id = target
     prefix = _nomic_prefix(model, kind)
     payload = {"model": model, "input": [(prefix + (t or ""))[:_INPUT_CHAR_CAP] for t in texts]}
     try:
@@ -161,6 +133,7 @@ def embed_texts(texts: list[str], kind: str = "document") -> Optional[list[list[
                 f"{base_url.rstrip('/')}/embeddings",
                 headers={
                     "Authorization": f"Bearer {api_key}",
+                    "X-Project-Id": project_id,
                     "Content-Type": "application/json",
                 },
                 json=payload,

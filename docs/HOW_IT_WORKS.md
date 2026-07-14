@@ -12,7 +12,7 @@ flowchart LR
     Console[Kaidera OS console]
     Orchestrator[Worker orchestration]
     Harnesses[AI harness adapters]
-    Providers[Configured model providers]
+    Providers[Kaidera AI Manifold]
     Cortex[Cortex API]
     Memory[(Postgres and pgvector)]
     Workspace[Project workspaces]
@@ -32,7 +32,7 @@ flowchart LR
 ### Kaidera OS console
 
 The console is the operator surface. It registers projects and workers, shows
-handoffs and run state, configures supported providers, and exposes controls for
+handoffs and run state, configures Manifold, and exposes controls for
 starting, stopping, reviewing, and recovering work.
 
 ### Worker orchestration
@@ -61,16 +61,10 @@ contracts.
 
 ### Provider layer
 
-Provider configuration supplies endpoints and local credentials to harnesses.
-The packaged public edition uses the OpenAI-compatible Manifold edge. Manifold
-keys are obtained through the Kaidera platform entitlement flow; usage metering
-and settlement happen on the server side rather than through client
-self-reporting.
-
-Unbaked Git checkouts use the development edition so maintainers can test the full
-provider integration catalogue. Release packaging explicitly bakes the public
-edition and restricts redistributed builds to Manifold. The generated edition
-marker belongs in release artifacts, not source control.
+Provider configuration supplies an endpoint, inference key, and project ID to the
+Kaidera harness. Both source checkouts and release archives use the
+OpenAI-compatible Kaidera AI Manifold edge. Model and reasoning-effort metadata
+is read dynamically from that edge.
 
 A missing or revoked provider credential disables the affected worker cleanly. It
 must not crash the Console or expose another provider's credential.
@@ -102,33 +96,27 @@ the first workspace and creates local runtime configuration for that project.
 7. Human review gates approve material changes before merge, release, or delivery.
 8. Later workers resume from Cortex context instead of rediscovering completed work.
 
-## Licensing and the community floor
+## Licensing
 
-Kaidera OS remains usable without a signed feature grant. The application enforces
-a nonzero community floor and treats absent, expired, revoked, or unreachable
-license state as that floor rather than as unlimited access.
+This repository is licensed under `AGPL-3.0-only` and has no runtime trial,
+activation, or signed feature-grant system. It is provided without warranty or
+liability. A separately distributed commercial edition with support is available
+from `sales@kaidera.ai`.
 
-Signed grants can raise capacity or enable named advanced features. The effective
-value for each capacity axis is the greater of the community floor and the signed
-grant. Advanced features are off unless explicitly granted. Platform services such
-as Manifold also enforce their own server-side entitlements.
-
-The source license and the runtime feature-grant system solve different problems:
-the AGPL grants rights to study, modify, and share the community source, while a
-platform grant controls access to separately operated services and capacity.
+Manifold is a separately operated service and validates its own inference
+credentials server-side. Missing, invalid, or unreachable Manifold configuration
+disables affected AI work cleanly without crashing Kaidera OS.
 
 ## Installation channels
 
-Public installation channels resolve to a versioned release payload:
+Open-source installation channels resolve to a versioned source release:
 
-- **macOS Console DMG:** the full runtime in a signed and notarized disk image.
-- **macOS Operator DMG:** the optional native controller for an existing install.
 - **Homebrew:** the versioned runtime plus the `kaidera-os` CLI.
 - **npm:** a small launcher that downloads and verifies the matching runtime.
 - **curl:** the release archive and checksum followed by the canonical installer.
 
-Release archives and DMGs are versioned. Installers verify SHA-256 before using
-a downloaded runtime. npm publications use GitHub OIDC trusted publishing rather
+Release archives are versioned. Installers verify SHA-256 before using a
+downloaded runtime. npm publications use GitHub OIDC trusted publishing rather
 than a long-lived registry token.
 
 ## Security boundaries
@@ -136,7 +124,7 @@ than a long-lived registry token.
 - Secrets belong in local environment or credential stores, never in Git.
 - Cortex commands use the API boundary rather than direct database access.
 - Project identity, memory, and handoff routing are project-scoped.
-- Public release files are checksummed; macOS images are signed and notarized.
+- Public release files are checksummed and signed.
 - Untrusted pull-request code must never receive release, signing, registry, or
   production credentials.
 - Customer payloads and generated runtime state are excluded from public source.
@@ -149,6 +137,5 @@ organization-level controls, and implementation support.
 
 - [Kaidera OS source](https://github.com/Kaidera-AI/kaidera-os)
 - [Public distributions](https://github.com/Kaidera-AI/homebrew-kaidera)
-- [Install on macOS](https://kaidera.ai/downloads/kaidera-os/macos)
 - [Enterprise service](https://kaidera.ai/for-enterprise)
 - [Documentation](https://docs.kaidera.ai)

@@ -87,7 +87,6 @@ from . import auth as auth_module
 from . import registration_api as registration_module
 from . import skills_api as skills_module
 from . import settings_module
-from .settings_module import api as settings_api
 from . import dispatch as dispatch_module
 from .dispatch.command import DispatchWorkerSpec, dispatch_worker
 from . import explain as explain_module
@@ -537,15 +536,6 @@ async def lifespan(app: FastAPI):
     clobbers an operator edit) — see settings.seed_agent_overrides + settings._load_designation_seed.
     Graceful-degrade: a missing/invalid profile logs + falls back to empty, never crashes boot.
     """
-    # License posture (Kaidera OS) — SOFT gate: an unlicensed hosted deploy logs a prominent
-    # warning (contact the configured platform administrator) but NEVER bricks the service; dev/test
-    # deployments are exempt (license_required → False). Guarded so a license hiccup can't block boot.
-    with suppress(Exception):
-        import logging as _logging
-
-        from app import license as license_mod
-
-        license_mod.enforce_at_startup(_logging.getLogger("console"))
     try:
         settings_store.seed_agent_overrides()
     except OSError:
@@ -596,8 +586,6 @@ async def lifespan(app: FastAPI):
     app.state.watchdog_task = None
     app.state.catalog_refresh_task = None
     app.state.update_status_refresh_task = None
-    app.state.license_refresh_task = None
-    app.state.license_refresh_stop = None
     app.state.runstate_prune_task = None
     # Live engine supervisor (autonomy go-live): reconciles the orchestrator's
     # running state against "is the engine wanted?" every few seconds, so flipping
@@ -793,30 +781,6 @@ async def lifespan(app: FastAPI):
         import logging as _logging
         _logging.getLogger("console").warning("update status warm-up failed: %s", exc)
 
-    # Online license heartbeat. Advisory only: keeps online grants fresh and picks up
-    # revocation/latest-release hints, but never blocks startup or gates the current
-    # local grant/free tier if the Kaidera AI platform is unavailable.
-    try:
-        import logging as _logging
-        from app import license_refresh
-
-        license_svc = settings_module.SettingsService(store=app.state.opstore)
-        app.state.license_refresh_stop = asyncio.Event()
-        app.state.license_refresh_task = asyncio.create_task(
-            license_refresh.heartbeat_forever(
-                load_settings=license_svc.load_app_settings,
-                save_settings=license_svc.upsert_app_settings,
-                stop=app.state.license_refresh_stop,
-                log=_logging.getLogger("console"),
-            ),
-            name="license-heartbeat",
-        )
-    except Exception as exc:  # never block startup on license refresh
-        import logging as _logging
-        _logging.getLogger("console").warning(
-            "license heartbeat failed to start: %s", exc
-        )
-
     try:
         yield
     finally:
@@ -866,16 +830,6 @@ async def lifespan(app: FastAPI):
             update_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await update_task
-        # Stop the advisory license heartbeat before closing the app-DB settings port.
-        lic_stop = getattr(app.state, "license_refresh_stop", None)
-        if lic_stop is not None:
-            with suppress(Exception):
-                lic_stop.set()
-        lic_task = getattr(app.state, "license_refresh_task", None)
-        if lic_task is not None:
-            lic_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await lic_task
         # Stop detached in-process chat / Approve & Run tasks before closing the
         # shared stores they use to mark terminal cancellation.
         with suppress(Exception):
@@ -1326,14 +1280,6 @@ def _agents_resolve_config(agent: dict, override: dict) -> dict:
         override.get("harness") or reg["harness"]
     ) or _DEFAULT_HARNESS
     model = (override.get("model") or reg["model"] or "").strip() or None
-    # LICENSE backstop: show kaidera (not a locked harness) when the override names one
-    # the license doesn't grant — keeps the card consistent with what the runner spawns.
-    try:
-        from app import license as _license_mod
-        if not _license_mod.entitlements().has_harness(harness):
-            harness, model = "kaidera", None
-    except Exception:
-        pass
     # VALIDITY (feature #99): coerce an impossible stored model to the harness
     # default so the CARD displays the SAME runnable model the runner uses — never an
     # impossible pair (same coercion as _chat_routing_for).
@@ -2176,16 +2122,6 @@ def _chat_routing_for(agent: dict, project_key: str) -> tuple[str, str | None, s
     eff_model = (ov.get("model") or reg["model"] or "").strip() or None
     eff_reasoning = (ov.get("reasoning") or reg["reasoning"] or "").strip() or None
 
-    # LICENSE backstop (the teeth): a stored/hand-edited override naming a harness the
-    # license doesn't grant must NEVER spawn it. Coerce to kaidera (always free) and drop
-    # the model so the kaidera default fills below. No-op in DEV (entitlements grant all).
-    try:
-        from app import license as _license_mod
-        if not _license_mod.entitlements().has_harness(eff_harness):
-            eff_harness, eff_model = "kaidera", None
-    except Exception:
-        pass
-
     # VALIDITY (feature #99): a STORED model can be impossible for the effective
     # harness (a stale override after a harness change, or a registry capability with
     # a cross-harness model — the CTO saw claude-code + a Gemini model). Coerce it to
@@ -2729,7 +2665,7 @@ async def _analytics_context(
         "active_view": "analytics",
         "selected": project,
         "selected_key": project_key,
-        "an_catalog_priced": catalog.get("openrouter_count", 0) > 0,
+        "an_catalog_priced": catalog.get("total", 0) > 0,
         **_analytics_view(
             state, decision_stats, msg_rows, counts, recent_decisions, agents, usage,
         ),
@@ -4587,8 +4523,7 @@ async def _settings_body_context(
 
     For "system" (R4a) this loads the console-local settings store and shapes it
     into render-ready groups (app.settings.view_groups). For "providers" (R4b) it
-    fetches the dynamic provider/model catalog (OpenRouter public list always +
-    any key-configured providers, ~15-min cached) and shapes it for the read-only
+    fetches the dynamic Manifold model catalog and shapes it for the read-only
     Providers & Models table. For "configure" (R4c) it builds the per-agent
     harness/model/reasoning configurator for the selected project; for "cortex"
     (R4c) the informational Cortex connection + /health + 6-layer read-out. An
@@ -4605,7 +4540,6 @@ async def _settings_body_context(
             "settings_page": "system",
             "settings_body_template": "_settings_system.html",
             "groups": settings_store.view_groups(),
-            "custom_providers": settings_store.view_custom_providers(),
             "selected_key": project,
         }
     if page == "providers":
@@ -4625,34 +4559,10 @@ async def _settings_body_context(
     if page == "cortex":
         return await _cortex_settings_context(cortex, project)
     if page == "license":
-        from app import license as lic
-        try:
-            from app import settings as _settings
-            raw = _settings._read_raw() or {}
-        except Exception:
-            raw = {}
-        # Make a dict out of the dataclass to pass to the template
-        ent = lic.entitlements()
-        # if there is a pending login, its info might be somewhere, but we'll manage it via HTMX
         return {
             "settings_page": "license",
             "settings_body_template": "_settings_license.html",
             "selected_key": project,
-            "entitlements": {
-                "valid": ent.valid,
-                "reason": ent.reason,
-                "customer": ent.customer,
-                "org_id": ent.org_id,
-                "in_grace": ent.in_grace,
-                "valid_until": ent.valid_until,
-                "grace_until": ent.grace_until,
-                "wallet": ent.wallet,
-                "addons": ent.addons,
-                "harnesses": list(ent.harnesses),
-                "limits": ent.limits,
-            },
-            "install_id": raw.get("license_install_id", "Not generated yet"),
-            "machine_fp": __import__("app.license_client").license_client.machine_fingerprint(raw, lambda x: True) if raw.get("license_machine_salt") else "Not generated yet",
         }
     # Unknown sub-tab id — generic stub (no sub-tab should normally reach this).
     label, increment = _SETTINGS_PLACEHOLDER.get(page, (page.title(), "a later increment"))
@@ -7551,174 +7461,6 @@ async def settings_project_folder_save(
     return templates.TemplateResponse(request, ctx["settings_body_template"], ctx)
 
 
-def _license_settings_service(request: Request) -> settings_api.SettingsService:
-    return settings_api.build_service(AppDbOperationalStore(appdb=_appdb(request)))
-
-
-async def _license_settings(request: Request) -> tuple[settings_api.SettingsService, dict[str, Any]]:
-    svc = _license_settings_service(request)
-    values = await settings_api._settings_io(lambda: svc.load_app_settings())
-    return svc, values if isinstance(values, dict) else {}
-
-
-async def _license_body_response(request: Request, **overrides: Any) -> HTMLResponse:
-    ctx = await _settings_body_context(_cortex(request), "license", _default_project())
-    ctx.update(overrides)
-    return templates.TemplateResponse(request, ctx["settings_body_template"], ctx)
-
-
-def _license_login_message(request: Request, message: str, *, kind: str = "error") -> HTMLResponse:
-    return templates.TemplateResponse(
-        request,
-        "_settings_license_login_message.html",
-        {"message": message, "kind": kind},
-    )
-
-
-def _license_retarget_settings_body(response: HTMLResponse) -> HTMLResponse:
-    response.headers["HX-Retarget"] = "#settings-body"
-    response.headers["HX-Reswap"] = "innerHTML"
-    return response
-
-
-def _extract_license_grant_text(raw: str) -> str:
-    text = (raw or "").strip()
-    if not text.startswith("{"):
-        return text
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return text
-    if not isinstance(parsed, dict):
-        return text
-    for key in ("grant", "license_key", "token"):
-        val = parsed.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    return text
-
-
-async def _read_uploaded_license_grant(upload: Any) -> tuple[str | None, str | None]:
-    reader = getattr(upload, "read", None)
-    if not callable(reader):
-        return None, "Choose a license grant file to import."
-    try:
-        raw = reader()
-        if hasattr(raw, "__await__"):
-            raw = await raw
-    except Exception as exc:
-        return None, f"Could not read license grant file: {exc}"
-    if isinstance(raw, bytes):
-        if len(raw) > 256_000:
-            return None, "License grant file is too large."
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return None, "License grant file must be UTF-8 text."
-    else:
-        text = str(raw or "")
-    grant = _extract_license_grant_text(text)
-    if not grant:
-        return None, "License grant file is empty."
-    return grant, None
-
-
-@app.post("/settings/license/login/start", response_class=HTMLResponse)
-async def settings_license_login_start(
-    request: Request,
-    _admin: Any = Depends(auth_module.require_admin_if_auth),
-) -> HTMLResponse:
-    from app.license_client import start_device_flow
-    res = await start_device_flow()
-    if not res.get("ok"):
-        return _license_login_message(request, f"Failed to start login: {res.get('error') or 'unknown error'}")
-
-    return templates.TemplateResponse(request, "_settings_license_polling.html", {
-        "device_code": res["device_code"],
-        "user_code": res["user_code"],
-        "verification_uri": res["verification_uri"],
-        "code_verifier": res["code_verifier"],
-        "interval": res["interval"]
-    })
-
-@app.post("/settings/license/login/poll", response_class=HTMLResponse)
-async def settings_license_login_poll(
-    request: Request,
-    _admin: Any = Depends(auth_module.require_admin_if_auth),
-) -> HTMLResponse:
-    form = await request.form()
-    device_code = str(form.get("device_code") or "")
-    code_verifier = str(form.get("code_verifier") or "")
-    if not device_code or not code_verifier:
-        return _license_login_message(request, "Login session is missing its device code. Start login again.")
-
-    from app.license_client import poll_device_flow, activate
-    res = await poll_device_flow(device_code, code_verifier)
-
-    if res.get("status") == "pending":
-        try:
-            interval = int(str(form.get("interval") or "5"))
-        except ValueError:
-            interval = 5
-        if res.get("slow_down"):
-            interval += 5
-        # Keep polling
-        return templates.TemplateResponse(request, "_settings_license_polling.html", {
-            "device_code": device_code,
-            "user_code": str(form.get("user_code") or ""),
-            "verification_uri": str(form.get("verification_uri") or ""),
-            "code_verifier": code_verifier,
-            "interval": interval,
-        })
-    elif res.get("status") == "done":
-        # Token acquired. Now activate.
-        org_login_token = res["org_login_token"]
-        svc, settings = await _license_settings(request)
-        act_res = await activate(org_login_token, settings=settings, save_settings=svc.upsert_app_settings)
-        if not act_res.ok:
-            return _license_login_message(request, f"Activation failed: {act_res.error or 'unknown error'}")
-
-        # Success! Reload the settings license body
-        return _license_retarget_settings_body(await _license_body_response(request, refresh_success=True))
-    else:
-        return _license_login_message(request, f"Login failed: {res.get('message') or 'unknown error'}")
-
-@app.post("/settings/license/refresh", response_class=HTMLResponse)
-async def settings_license_refresh(
-    request: Request,
-    _admin: Any = Depends(auth_module.require_admin_if_auth),
-) -> HTMLResponse:
-    from app.license_client import heartbeat
-
-    svc, settings = await _license_settings(request)
-    res = await heartbeat(settings=settings, save_settings=svc.upsert_app_settings)
-
-    if not res.ok:
-        return await _license_body_response(request, refresh_error=res.error)
-    else:
-        return await _license_body_response(request, refresh_success=True)
-
-@app.post("/settings/license/import", response_class=HTMLResponse)
-async def settings_license_import(
-    request: Request,
-    _admin: Any = Depends(auth_module.require_admin_if_auth),
-) -> HTMLResponse:
-    form = await request.form()
-    grant, error = await _read_uploaded_license_grant(form.get("grant_file"))
-    if error or not grant:
-        return await _license_body_response(request, import_error=error or "License grant is empty.")
-
-    from app import license as lic
-    if not lic.verify_license(grant):
-        return await _license_body_response(request, import_error="Imported grant is invalid or expired.")
-
-    svc, _settings = await _license_settings(request)
-    saved = await settings_api._settings_io(lambda: svc.upsert_app_settings({"license_key": grant}))
-    if not saved:
-        return await _license_body_response(request, import_error="Could not store imported license grant.")
-    return await _license_body_response(request, import_success=True)
-
-
 @app.post("/settings/system", response_class=HTMLResponse)
 async def settings_system_save(
     request: Request, project: str | None = None
@@ -7763,112 +7505,17 @@ async def settings_system_save(
 async def settings_test_key(
     request: Request, project: str | None = None
 ) -> HTMLResponse:
-    """Probe ONE provider credential and render the inline ✓/✗ result (R4a follow-up).
-
-    `field` (form) is a built-in secret key (anthropic_api_key / openai_api_key /
-    openrouter_api_key / fireworks_api_key / …) or `custom:<id>` for an operator-added
-    provider. For built-ins the form ALSO carries that field's current input value: a
-    freshly-typed key is tested as-is (pre-save feedback); a blank/masked field falls
-    back to the stored key, then to the REAL process-env / local-cortex/.env key the
-    harness runs with (so e.g. OpenRouter tests green off its .env key even when the
-    console store is empty). The probe is a cheap read-only call (model list / key
-    info — never a completion, zero tokens) and NEVER echoes the key — only ok + a
-    message. Swapped into the per-row #keytest-* slot."""
+    """Probe the Manifold inference key without performing an inference call."""
     form = await _read_posted_form(request)
     selected_key = project or _default_project()
     field = (form.get("field") or "").strip()
-    # The operator-typed value of THAT secret input (built-ins only); custom
-    # providers resolve their key server-side from the stored entry, so typed=None.
-    typed = form.get(field) if field and not field.startswith("custom:") else None
+    typed = form.get(field) if field else None
     result = await provider_check.test_provider(field, typed)
     return templates.TemplateResponse(
         request,
         "_settings_keytest.html",
         {"r": result, "field": field, "selected_key": selected_key},
     )
-
-
-def _custom_providers_ctx(
-    project: str | None,
-    *,
-    added: str | None = None,
-    removed: bool = False,
-    error: str | None = None,
-) -> dict:
-    """Context for the custom-providers partial (the list + add-form region that
-    swaps into #sys-custom-providers). `added`/`removed`/`error` drive a small
-    inline status line; the list is always re-read fresh (masked) from the store."""
-    return {
-        "custom_providers": settings_store.view_custom_providers(),
-        "cp_added": added,
-        "cp_removed": removed,
-        "cp_error": error,
-        "selected_key": project or _default_project(),
-    }
-
-
-@app.post("/settings/system/custom-provider", response_class=HTMLResponse)
-async def settings_custom_provider_add(
-    request: Request, project: str | None = None
-) -> HTMLResponse:
-    """Add ONE operator-defined custom provider (name + base URL + API key) to the
-    console-local store (Task 4). Reads the urlencoded body WITHOUT python-
-    multipart (same zero-extra-deps approach as the other settings saves), appends
-    via app.settings.add_custom_provider (atomic write; built-in/agent settings
-    preserved), and returns the refreshed custom-providers partial swapped into
-    #sys-custom-providers — the new row shows its key masked.
-
-    Writes ONLY the console settings store; the real Cortex/.env is untouched."""
-    form = await _read_posted_form(request)
-    selected_key = project or _default_project()
-    name = (form.get("cp_name") or "").strip()
-    base_url = (form.get("cp_base_url") or "").strip()
-    api_key = (form.get("cp_api_key") or "").strip()
-
-    added: str | None = None
-    error: str | None = None
-    if not name:
-        error = "A provider name is required."
-    else:
-        try:
-            entry = settings_store.add_custom_provider(name, base_url, api_key)
-            added = entry["name"]
-        except ValueError as exc:
-            error = str(exc)
-        except OSError as exc:
-            error = f"write failed: {exc}"
-
-    return templates.TemplateResponse(
-        request,
-        "_settings_custom_providers.html",
-        _custom_providers_ctx(selected_key, added=added, error=error),
-    )
-
-
-@app.post("/settings/system/custom-provider/delete", response_class=HTMLResponse)
-async def settings_custom_provider_delete(
-    request: Request, project: str | None = None
-) -> HTMLResponse:
-    """Remove ONE custom provider by id (Task 4). Reads the urlencoded body for
-    `cp_id`, removes via app.settings.remove_custom_provider (atomic; other
-    settings preserved), and returns the refreshed custom-providers partial."""
-    form = await _read_posted_form(request)
-    selected_key = project or _default_project()
-    pid = (form.get("cp_id") or "").strip()
-
-    removed = False
-    error: str | None = None
-    try:
-        removed = settings_store.remove_custom_provider(pid)
-    except OSError as exc:
-        error = f"write failed: {exc}"
-
-    return templates.TemplateResponse(
-        request,
-        "_settings_custom_providers.html",
-        _custom_providers_ctx(selected_key, removed=removed, error=error),
-    )
-
 
 # --- codex (ChatGPT) subscription login. JSON routes (the SPA Providers tab calls
 # them; a CLI can too). Current supported flow is `codex login --device-auth`:

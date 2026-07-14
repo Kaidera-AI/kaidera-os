@@ -748,7 +748,7 @@ def _safe_dsn(dsn: str) -> str:
 #  SETTINGS STORE (E007) — the console's settings ALSO live in the app-DB.
 #
 #  This is the SECOND app-DB responsibility (the first is usage telemetry
-#  above): persisting ALL console settings — System config + custom providers +
+#  above): persisting ALL console settings — System config + Manifold settings +
 #  per-agent harness/model/reasoning/designation/role overrides — into the
 #  durable app-DB so they survive a server restart from an operational store
 #  (config/settings.local.json becomes a fallback/seed only). Agent harness/

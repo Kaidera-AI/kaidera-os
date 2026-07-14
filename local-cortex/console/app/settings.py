@@ -1,13 +1,12 @@
 """Console settings store for the Kaidera OS Harness console (R4a; E007 app-DB).
 
-The load/save layer for ALL console settings: the System-config page values
-(Cortex connection, provider API keys, harness paths/flags, app preferences), the
-operator-added custom providers, and the per-agent harness/model/reasoning/
-designation/role overrides.
+The load/save layer for console settings: the System-config page values
+(Cortex connection, Manifold credentials, harness flags, and app preferences)
+plus per-agent harness/model/reasoning/designation/role overrides.
 
 STORAGE (E007 / DATA_SEPARATION) — moved into the app-DB:
-  * The SOURCE OF TRUTH is now the app-DB (`harness-appdb`): System fields + the
-    custom-providers + seed-marker side blobs live in `app_settings`, and the
+  * The SOURCE OF TRUTH is now the app-DB (`harness-appdb`): System fields,
+    Manifold settings, and the seed marker live in `app_settings`, while
     per-agent overrides live in `agent_settings` (see appdb.SettingsDB +
     .agents/data/appdb/2026-06-01-settings.sql). Agent harness/model routing is
     OPERATIONAL config, so it belongs in the app-DB, NOT in Cortex (Cortex stays
@@ -161,15 +160,9 @@ SCHEMA: list[dict[str, Any]] = [
             },
         ],
     },
-    # NOTE (canonicalization — Track 2): the provider API-key fields USED to live
-    # here as a `providers` group, but that triple-duplicated them (System + the
-    # read-only Providers tab + the raw editor). The Providers tab is now the ONE
-    # control surface for provider keys/config — a provider key is set/edited ONLY
-    # there. The KEYS the providers surface owns are enumerated in
-    # PROVIDER_SECRET_KEYS below (kept so the raw editor + any filter can exclude
-    # them in one place). The underlying STORE is unchanged — only the owning
-    # SURFACE moved. System keeps the NON-provider settings (Cortex-connection,
-    # harness, app preferences).
+    # Manifold connection fields live outside this System schema. The Providers tab
+    # is their single control surface, while PROVIDER_SECRET_KEYS below remains the
+    # canonical list used to keep secrets out of raw-editor responses.
     {
         "id": "harness",
         "title": "Harness",
@@ -182,11 +175,11 @@ SCHEMA: list[dict[str, Any]] = [
                 "label": "Default harness",
                 "type": "select",
                 "default": "kaidera",  # fitness:allow-literal "kaidera" is the HARNESS/product name (the native workhorse runtime), not a project key
-                # The shipped harness integrations. The JSON API filters this list
-                # through the edition/license entitlement seam before rendering it.
+                # The shipped open-source harness integrations. Direct provider adapters
+                # are absent; the native harness reaches models through Manifold.
                 "options": ["claude-code", "codex", "kaidera", "pi"],  # fitness:allow-literal harness identifiers (product), not project keys
                 "hint": "Harness a NEW agent uses when it declares none. kaidera uses "
-                        "connected provider APIs; Claude Code, Codex, and PI use their "
+                        "Kaidera Manifold; Claude Code, Codex, and PI use their "
                         "installed subscription CLIs.",
             },
             {
@@ -208,8 +201,8 @@ SCHEMA: list[dict[str, Any]] = [
                 "default": False,
                 "hint": "Run the deterministic autonomy engine when the console boots. "
                         "Each project is still gated by its Dashboard project autonomous "
-                        "dispatch and propose-mode controls; takes effect on the next "
-                        "console restart.",
+                        "dispatch and propose-mode controls. Changes apply live within "
+                        "the engine reconciliation cycle.",
             },
         ],
     },
@@ -253,44 +246,11 @@ def is_secret(key: str) -> bool:
 # duplication). Enumerated HERE in ONE place so any surface that must exclude them
 # (the raw editor; a future filter) reads a single source.
 #
-# The 12 canonical provider API keys + the remaining provider credential fields
-# (account ids + the SigV4 pair + the extra provider secrets) — everything the
-# Providers tab owns.
+# The open-source source tree supports only the managed Manifold credential.
 PROVIDER_SECRET_KEYS: tuple[str, ...] = (
-    # Kaidera AI Manifold credentials are platform-minted by license login. They still
-    # live in the provider-owned side store so System saves do not drop them.
     "kaidera_manifold_api_key",
     "kaidera_manifold_base_url",
     "kaidera_manifold_project_id",
-    "anthropic_api_key",
-    "openai_api_key",
-    "openrouter_api_key",
-    "fireworks_api_key",
-    "groq_api_key",
-    "siliconflow_api_key",
-    "dashscope_api_key",
-    "alibaba_cloud_api_key",
-    "deepseek_api_key",
-    "together_api_key",
-    "cohere_api_key",
-    "nvidia_api_key",
-    "inception_api_key",
-    "moonshot_api_key",
-    # Ollama Cloud — an OpenAI-compatible hosted API (base https://ollama.com, the
-    # /v1 OpenAI-compat path + a Bearer key). Owned by the Providers tab (the
-    # canonical home), NOT a System-schema field (no duplicate surface).
-    "ollama_cloud_api_key",
-    # the remaining provider-credential fields the Providers tab also owns
-    "fireworks_account_id",
-    "perplexity_api_key",
-    "xai_api_key",
-    "aws_access_key_id",
-    "aws_secret_access_key",
-    "aws_region",
-    # codex (OpenAI/ChatGPT) subscription OAuth token bundle — a JSON blob the app owns via the
-    # in-app device-code login (app/codex_oauth.py), NOT a pasted key. Listed here so the raw
-    # App-settings editor never surfaces the tokens. (Inc 4b — eliminates the Pi CLI.)
-    "codex_oauth",
 )
 
 
@@ -399,9 +359,8 @@ def surface_extra_settings(values: dict[str, Any] | None) -> dict[str, Any]:
       * the current typed SCHEMA fields  (shown in the System form — no duplication),
       * the provider secret keys         (owned by the Providers tab),
       * the RETIRED keys                 (since-removed fields a stale store may hold),
-      * the structural / internal blobs  (the per-agent overrides, the custom-providers
-                                          list, and any `_`-prefixed marker such as the
-                                          `_designation_seed_applied` seed flag).
+      * the structural / internal blobs  (the per-agent overrides and any
+                                          `_`-prefixed marker).
     What remains is only the keys a human genuinely added out-of-band — usually none,
     so the raw editor stays empty unless there's something real to show. The STORE is
     untouched — this is a SURFACE filter only. Tolerates a None/non-dict input (→ {})."""
@@ -411,7 +370,6 @@ def surface_extra_settings(values: dict[str, Any] | None) -> dict[str, Any]:
     excluded.update(_RETIRED_SETTING_KEYS)             # since-removed fields
     excluded.update({
         AGENT_OVERRIDES_KEY,
-        CUSTOM_PROVIDERS_KEY,
         HARNESS_MODEL_OVERRIDES_KEY,
         SEED_MARKER_KEY,
     })
@@ -470,14 +428,14 @@ def normalize(data: dict[str, Any] | None) -> dict[str, Any]:
 #  Everything in this module funnels reads through `_read_raw()` (returns the
 #  full JSON-shaped dict) and writes through `_atomic_write(payload)` (takes the
 #  full JSON-shaped dict). Centralising the app-DB swap HERE means every System /
-#  custom-provider / per-agent helper transparently uses the app-DB, with the
+#  per-agent helper transparently uses the app-DB, with the
 #  JSON file as a fallback read/write only when the app-DB cannot answer — no
 #  caller changed.
 #
 #  The JSON-shaped dict <-> two-table mapping:
 #    * agent_overrides blob  <->  agent_settings table
 #    * everything else        <->  app_settings table (one key→JSON row each:
-#                                   System fields + custom_providers + seed marker)
+#                                   System fields + Manifold settings + seed marker)
 # ---------------------------------------------------------------------------
 
 
@@ -499,7 +457,7 @@ def _db_read_raw() -> dict[str, Any] | None:
     """Reconstruct the full JSON-shaped settings dict from the app-DB, or None
     when the app-DB can't answer (caller then falls back to the file).
 
-    Merges `app_settings` (System fields + custom_providers + seed marker) with
+    Merges `app_settings` (System fields + Manifold settings + seed marker) with
     the per-agent overrides from `agent_settings` under AGENT_OVERRIDES_KEY — the
     exact shape the JSON file held."""
     app = _db.load_app_settings()
@@ -627,13 +585,6 @@ def normalize_designation(raw: Any) -> str:
 # Kept OUTSIDE the SCHEMA so the schema-driven System form never touches it; the
 # Configure page reads/writes it through the dedicated agent-override API below.
 AGENT_OVERRIDES_KEY = "agent_overrides"
-
-# Storage key for operator-added CUSTOM providers (name + base URL + masked API
-# key). A list of {id, name, base_url, api_key}. Kept OUTSIDE the SCHEMA (the
-# fixed provider-key fields in SCHEMA are built-ins; this is the open-ended set
-# the "+ Add provider" affordance manages) and preserved across every System
-# save, exactly like AGENT_OVERRIDES_KEY. See the custom-provider helpers below.
-CUSTOM_PROVIDERS_KEY = "custom_providers"
 
 # Marker key recording that the one-time designation
 # seed has run. Once set we NEVER re-seed, so an operator who clears a seeded
@@ -784,10 +735,6 @@ def seed_agent_overrides() -> None:
             blob[store_key] = cleaned
 
     payload = dict(load() if _store_initialized() else defaults())
-    # carry any pre-existing custom-provider blob across the seed write
-    customs = raw.get(CUSTOM_PROVIDERS_KEY)
-    if isinstance(customs, list) and customs:
-        payload[CUSTOM_PROVIDERS_KEY] = customs
     if blob:
         payload[AGENT_OVERRIDES_KEY] = blob
     payload[SEED_MARKER_KEY] = True
@@ -913,25 +860,17 @@ AGENT_OVERRIDE_FIELDS = _designation.AGENT_OVERRIDE_FIELDS
 
 
 def _carry_side_blobs(raw: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Re-attach the non-SCHEMA side blobs (per-agent overrides, custom providers,
-    seed marker) from `raw` onto `payload` so a System write never drops them.
+    """Re-attach non-SCHEMA agent state and Manifold settings on System writes.
 
     normalize()/the SCHEMA only know about the System fields, so anything stored
     OUTSIDE the schema has to be carried across explicitly on every write."""
     blob = raw.get(AGENT_OVERRIDES_KEY)
     if isinstance(blob, dict) and blob:
         payload[AGENT_OVERRIDES_KEY] = blob
-    customs = raw.get(CUSTOM_PROVIDERS_KEY)
-    if isinstance(customs, list) and customs:
-        payload[CUSTOM_PROVIDERS_KEY] = customs
     if raw.get(SEED_MARKER_KEY):
         payload[SEED_MARKER_KEY] = True
-    # Provider API keys (PROVIDER_SECRET_KEYS) ALSO live outside the System schema — the
-    # Providers surface owns them, normalize() drops them. Without carrying them here, every
-    # System/agent-config save (which funnels through _persist_with_overrides → full-replace
-    # _atomic_write) WIPES every stored provider key — data-loss: a configured key silently
-    # vanishes on the next settings save, and the harness then fails `provider_not_configured`.
-    # Carry each non-empty provider secret across exactly like the other side blobs.
+    # Manifold credentials/config also live outside the System schema. Carry each
+    # non-empty value so a System or agent-config save cannot erase the connection.
     for _pkey in PROVIDER_SECRET_KEYS:
         _pval = raw.get(_pkey)
         if _pval is not None and (not isinstance(_pval, str) or _pval.strip()):
@@ -940,7 +879,7 @@ def _carry_side_blobs(raw: dict[str, Any], payload: dict[str, Any]) -> None:
 
 def _persist_with_overrides(system_settings: dict[str, Any]) -> None:
     """Write the System settings back to disk WITHOUT clobbering the side blobs
-    (per-agent overrides, custom providers) or the one-time seed marker. Reads the
+    (per-agent overrides or Manifold settings) or the one-time seed marker. Reads the
     current raw store, swaps in the new System values, re-attaches the side blobs,
     and writes atomically."""
     raw = _read_raw()
@@ -1254,150 +1193,6 @@ def set_approval_status(
     if not key or not hid:
         return False
     return _db.set_approval_status(key, hid, str(status))
-
-
-# ---------------------------------------------------------------------------
-#  Custom providers — operator-added provider credentials (name + base URL +
-#  masked API key). The fixed provider-key fields in SCHEMA are built-ins; this
-#  is the open-ended set the System page's "+ Add provider" affordance manages.
-#  Stored as a list under CUSTOM_PROVIDERS_KEY, OUTSIDE the schema, and preserved
-#  across every System save (see _carry_side_blobs).
-#
-# Each stored entry:  {id, name, base_url, api_key}
-#   id       : short stable slug used to address the row for removal
-#   name     : operator-facing provider name (required)
-#   base_url : provider base URL (optional but expected)
-#   api_key  : the secret — kept in the app-DB settings store (or the gitignored
-#              fallback file only when degraded), masked in the UI exactly like
-#              the built-in secret fields (never echoed).
-# ---------------------------------------------------------------------------
-
-# Bounds keep a hand-edited or pasted value from bloating the store / the page.
-_CP_NAME_MAX = 80
-_CP_URL_MAX = 300
-_CP_KEY_MAX = 400
-
-
-def _slugify_provider(name: str) -> str:
-    """Lower-case alnum/dash slug from a provider name (fallback: "provider")."""
-    out = []
-    for ch in (name or "").strip().lower():
-        if ch.isalnum():
-            out.append(ch)
-        elif ch in (" ", "-", "_", ".", "/"):
-            out.append("-")
-    slug = "".join(out).strip("-")
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return slug[:48] or "provider"
-
-
-def _clean_custom_provider(raw: Any) -> dict[str, str] | None:
-    """Coerce one stored custom-provider entry into a clean dict, or None if it
-    has no usable name. Tolerant by design (a hand-edited file can never 500)."""
-    if not isinstance(raw, dict):
-        return None
-    name = str(raw.get("name") or "").strip()[:_CP_NAME_MAX]
-    if not name:
-        return None
-    pid = str(raw.get("id") or "").strip() or _slugify_provider(name)
-    return {
-        "id": pid,
-        "name": name,
-        "base_url": str(raw.get("base_url") or "").strip()[:_CP_URL_MAX],
-        "api_key": str(raw.get("api_key") or "").strip()[:_CP_KEY_MAX],
-    }
-
-
-def load_custom_providers() -> list[dict[str, str]]:
-    """Return the stored custom providers as a clean list (drops malformed /
-    nameless entries). Tolerates a missing / non-list blob (→ [])."""
-    blob = _read_raw().get(CUSTOM_PROVIDERS_KEY)
-    if not isinstance(blob, list):
-        return []
-    out: list[dict[str, str]] = []
-    for entry in blob:
-        cleaned = _clean_custom_provider(entry)
-        if cleaned:
-            out.append(cleaned)
-    return out
-
-
-def _unique_provider_id(base: str, existing: set[str]) -> str:
-    """Return `base`, or base-2/base-3/… if it collides with an existing id."""
-    if base not in existing:
-        return base
-    n = 2
-    while f"{base}-{n}" in existing:
-        n += 1
-    return f"{base}-{n}"
-
-
-def add_custom_provider(name: str, base_url: str, api_key: str) -> dict[str, str]:
-    """Append a custom provider (name + base URL + API key) and persist atomically.
-
-    `name` is required (a blank name is a no-op that raises ValueError so the route
-    can surface it). The id is a unique slug of the name. Reuses the same atomic
-    write + side-blob preservation as every other store write. Returns the stored
-    (cleaned) entry."""
-    entry = _clean_custom_provider(
-        {"name": name, "base_url": base_url, "api_key": api_key}
-    )
-    if entry is None:
-        raise ValueError("a provider name is required")
-
-    raw = _read_raw()
-    current = load_custom_providers()
-    entry["id"] = _unique_provider_id(entry["id"], {c["id"] for c in current})
-    current.append(entry)
-
-    payload = dict(load())  # the current SCHEMA System values
-    _carry_side_blobs(raw, payload)
-    payload[CUSTOM_PROVIDERS_KEY] = current  # the recomputed list wins
-    _atomic_write(payload)
-    return entry
-
-
-def remove_custom_provider(provider_id: str) -> bool:
-    """Remove the custom provider with `provider_id`. Returns True if one was
-    removed. Persists atomically (side blobs preserved). A no-op (returns False)
-    for an unknown / blank id — never raises."""
-    pid = (provider_id or "").strip()
-    if not pid:
-        return False
-    raw = _read_raw()
-    current = load_custom_providers()
-    kept = [c for c in current if c["id"] != pid]
-    if len(kept) == len(current):
-        return False  # nothing matched
-
-    payload = dict(load())
-    _carry_side_blobs(raw, payload)
-    if kept:
-        payload[CUSTOM_PROVIDERS_KEY] = kept
-    else:
-        payload.pop(CUSTOM_PROVIDERS_KEY, None)  # last one removed → drop the key
-    _atomic_write(payload)
-    return True
-
-
-def view_custom_providers() -> list[dict[str, Any]]:
-    """Render-ready custom-provider list for the System page. The raw api_key is
-    NEVER placed in the output — only `has_key` (bool) + a masked display string,
-    mirroring the built-in secret fields so a key can't leak into the HTML."""
-    out: list[dict[str, Any]] = []
-    for c in load_custom_providers():
-        has_key = bool(c.get("api_key"))
-        out.append(
-            {
-                "id": c["id"],
-                "name": c["name"],
-                "base_url": c.get("base_url", ""),
-                "has_key": has_key,
-                "key_display": MASK_PLACEHOLDER if has_key else "",
-            }
-        )
-    return out
 
 
 # ---------------------------------------------------------------------------

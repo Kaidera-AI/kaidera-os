@@ -275,51 +275,19 @@ def _catalog_chat_options(
     return out
 
 
-_OWN_HARNESS_PI_BRIDGE_PROVIDERS = frozenset({
-    "fireworks",
-    "ollama-cloud",
-    "openrouter",
-})
-
-
 def _kaidera_catalog_groups(
     catalog_groups: Optional[list],
     pi_catalog_groups: Optional[list],
 ) -> list:
-    """Provider catalog groups for Kaidera AI/kaidera.
-
-    The primary source remains the Providers catalog. PI, however, can also own
-    provider API-key logins host-side via extension auth (notably Ollama Cloud).
-    When PI can see an API-compatible provider and the normal provider catalog has
-    no rows for that provider, bridge that group into the Kaidera AI picker. Skip
-    subscription-only PI providers such as OpenAI-Codex because kaidera cannot
-    call those APIs directly.
-    """
-    # CONFIGURED-ONLY: never offer a model the operator can't actually run. OpenRouter is fetched
-    # WITHOUT a key (its full public list, as the "richest source"), so without this filter its
-    # ~300 models flood the picker and an agent can be saved with one that fails at chat time with
-    # "no <provider> provider key is configured" (a real misconfig: an agent saved on openrouter with no key). Only
-    # keep providers that have a real configured key; PI-bridged providers (added below) count as
-    # configured by virtue of the host-side login.
-    out = [g for g in (catalog_groups or []) if isinstance(g, dict) and g.get("configured")]
-    providers_with_rows = {
-        str(g.get("provider") or "")
-        for g in out
-        if isinstance(g, dict) and (g.get("rows") or [])
-    }
-    for group in pi_catalog_groups or []:
-        if not isinstance(group, dict):
-            continue
-        provider = str(group.get("provider") or "")
-        if provider not in _OWN_HARNESS_PI_BRIDGE_PROVIDERS:
-            continue
-        if provider in providers_with_rows:
-            continue
-        if not (group.get("rows") or []):
-            continue
-        out.append(group)
-        providers_with_rows.add(provider)
-    return out
+    """Return configured Manifold catalog rows for the Kaidera harness."""
+    del pi_catalog_groups
+    return [
+        group
+        for group in (catalog_groups or [])
+        if isinstance(group, dict)
+        and group.get("configured")
+        and group.get("provider") == "kaidera-manifold"
+    ]
 
 
 def _merge_model_options(primary: Optional[list], fallback: Optional[list]) -> list:

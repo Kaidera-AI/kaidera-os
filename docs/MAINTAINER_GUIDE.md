@@ -83,7 +83,7 @@ Review in this order:
    untrusted input with elevated authority?
 3. **Correctness:** Do state transitions, failure modes, migrations, and recovery
    behavior work?
-4. **Compatibility:** Does it preserve supported macOS/Linux and harness/provider
+4. **Compatibility:** Does it preserve supported macOS/Linux and harness/Manifold
    contracts?
 5. **Tests:** Is evidence proportional to risk and blast radius?
 6. **Privacy:** Does the diff contain customer payloads, local state, or private
@@ -154,12 +154,11 @@ must not disappear into an untracked private fork.
 For every binary or package release:
 
 1. Identify the exact reviewed public-source commit.
-2. Apply and review any edition packaging transformation explicitly.
-3. Run the full source, package-hygiene, and distribution test suites.
-4. Tag the corresponding source commit.
-5. Publish equivalent access to corresponding source next to object artifacts.
-6. Include the AGPL license and preserve third-party notices.
-7. Verify release URLs and SHA-256 values anonymously.
+2. Run the full source, package-boundary, and distribution test suites.
+3. Tag the corresponding source commit.
+4. Publish equivalent access to corresponding source next to object artifacts.
+5. Include the AGPL license and preserve third-party notices.
+6. Verify release URLs and SHA-256 values anonymously.
 
 Do not publish a package whose source cannot be reproduced or located. Keep
 signing and registry credentials outside contributor-controlled workflows.

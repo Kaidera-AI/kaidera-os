@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import type { ProvidersConfig } from '../api/types'
 import { AddProjectModal, type AddProjectClient } from './RegistrationForms'
-import { ConfiguredProvidersPanel, type SettingsWriteClient } from './SettingsView'
+import type { SettingsWriteClient } from './SettingsView'
 
 /**
  * The first-run STARTING POINT. Shown (by App) whenever there are zero projects, so a fresh
@@ -31,6 +31,107 @@ interface OnboardingViewProps {
   /** Called after a project is registered — the shell refetches projects (which auto-selects the
    *  new one + dismisses this view, landing the operator on the seeded "lead" worker). */
   onProjectCreated: () => void
+}
+
+function ManifoldSetup({
+  config,
+  client,
+  onSaved,
+}: {
+  config: ProvidersConfig | null
+  client: SettingsWriteClient
+  onSaved: () => void
+}) {
+  const row = (config?.providers ?? []).find((provider) => provider.name === 'kaidera-manifold')
+  const [key, setKey] = useState('')
+  const [projectId, setProjectId] = useState(row?.project_id ?? '')
+  const [busy, setBusy] = useState<'save' | 'test' | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  async function save() {
+    const changes: Record<string, string> = {}
+    if (key.trim()) changes.kaidera_manifold_api_key = key.trim()
+    if (projectId.trim()) changes.kaidera_manifold_project_id = projectId.trim()
+    if (Object.keys(changes).length === 0) return
+    if (client.setAppSettings) {
+      await client.setAppSettings('', changes)
+    } else {
+      for (const [setting, value] of Object.entries(changes)) {
+        await client.setAppSetting('', setting, value)
+      }
+    }
+    setKey('')
+    onSaved()
+  }
+
+  async function run(action: 'save' | 'test') {
+    setBusy(action)
+    setNotice(null)
+    try {
+      await save()
+      if (action === 'test') {
+        const result = await client.providerKeyTest('', {
+          provider: 'kaidera_manifold_api_key',
+          use_stored: true,
+        })
+        setNotice(result.detail)
+      } else {
+        setNotice('Connection saved.')
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="space-y-1">
+          <span className="block text-[10px] font-semibold uppercase text-ink-500">Manifold inference key</span>
+          <input
+            className="w-full rounded-md border border-glass-line bg-base-950/55 px-3 py-2 text-xs text-ink-100 outline-none focus:border-mint-400/60"
+            type="password"
+            value={key}
+            placeholder={row?.key_is_set ? 'Stored; enter a replacement' : 'mfld-...'}
+            autoComplete="new-password"
+            onChange={(event) => setKey(event.target.value)}
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="block text-[10px] font-semibold uppercase text-ink-500">Project ID</span>
+          <input
+            className="w-full rounded-md border border-glass-line bg-base-950/55 px-3 py-2 text-xs text-ink-100 outline-none focus:border-mint-400/60"
+            value={projectId}
+            placeholder="Manifold project ID"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setProjectId(event.target.value)}
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded-md bg-accent/20 px-3 py-1.5 text-xs font-medium text-accent disabled:opacity-45"
+          disabled={busy !== null || (!key.trim() && !projectId.trim())}
+          onClick={() => void run('save')}
+        >
+          {busy === 'save' ? 'Saving...' : 'Save'}
+        </button>
+        <button
+          type="button"
+          className="rounded-md border border-glass-line px-3 py-1.5 text-xs text-ink-300 disabled:opacity-45"
+          disabled={busy !== null || (!row?.key_is_set && (!key.trim() || !projectId.trim()))}
+          onClick={() => void run('test')}
+        >
+          {busy === 'test' ? 'Testing...' : 'Test'}
+        </button>
+      </div>
+      {notice && <p className="text-[11px] text-ink-400">{notice}</p>}
+    </div>
+  )
 }
 
 function StepHeader({ n, title, done, locked }: { n: number; title: string; done?: boolean; locked?: boolean }) {
@@ -78,13 +179,10 @@ export function OnboardingView({
         <section className="space-y-3 rounded-xl border border-glass-line bg-base-900/40 p-4">
           <StepHeader n={1} title="Connect access" done={hasKey} />
           <p className="text-[11px] leading-relaxed text-ink-500">
-            Add at least one provider API key (e.g. Fireworks or Ollama Cloud) — the URL is already
-            built in. This is <span className="text-ink-400">universal</span>: it applies to every
-            project. Paste your key, Save, then <span className="text-ink-400">Test</span> to
-            confirm it works.
+            Connect a Kaidera AI Manifold inference key and project ID. This connection is{' '}
+            <span className="text-ink-400">universal</span> and applies to every project.
           </p>
-          <ConfiguredProvidersPanel
-            project=""
+          <ManifoldSetup
             config={providersConfig}
             client={settingsClient}
             onSaved={onSettingsSaved}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate RELEASE_MANIFEST.json, the source of truth for a Kaidera OS release.
 
-The commercial redist builds every Kaidera OS unit (console, cortex-api, the cortex-*
+The open-source release builds every Kaidera OS unit (console, cortex-api, the cortex-*
 workers) from ONE source tree via `git archive HEAD`, so they are inherently the same
 version. This manifest makes that EXPLICIT + checkable: it derives the unit set straight
 from the shipped Cortex compose (a service with `build:` is a Kaidera OS unit built from

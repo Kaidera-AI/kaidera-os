@@ -10,10 +10,11 @@
 # the release tarball cannot forge a signature for it without the matching PRIVATE key.
 #
 # Install on a new PC (prereqs: curl + minisign):
-#   curl -fsSL https://github.com/Kaidera-AI/homebrew-kaidera/releases/latest/download/bootstrap.sh -o bootstrap.sh && bash bootstrap.sh
+#   curl -fsSL https://raw.githubusercontent.com/Kaidera-AI/kaidera-os/main/dist/bootstrap.sh | bash
 set -euo pipefail
 
-DEFAULT_REPO="Kaidera-AI/homebrew-kaidera"
+DEFAULT_REPO="Kaidera-AI/kaidera-os"
+LEGACY_REPO="Kaidera-AI/homebrew-kaidera"
 REPO="${KAIDERA_REPO:-$DEFAULT_REPO}"
 TAG="${KAIDERA_RELEASE:-latest}"          # or pin a specific vX.Y.Z
 DEFAULT_DEST="$HOME/kaidera-os"
@@ -29,20 +30,28 @@ die(){ printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --- preflight ---------------------------------------------------------------------------
 [ -n "$REPO" ] || die "KAIDERA_REPO is required (for example: Kaidera-AI/homebrew-kaidera)."
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || die "invalid GitHub repository '$REPO' (expected owner/name)."
 command -v curl >/dev/null 2>&1     || die "curl is required to download public release assets."
 command -v minisign >/dev/null 2>&1 || die "minisign required: 'brew install minisign' (macOS) or your package manager (Linux)."
 case "$MINISIGN_PUBKEY" in RWQ__RUN*) die "bootstrap not configured — the publisher must run dist/setup-signing.sh to embed the public key." ;; esac
 
 # --- 1. download the signed release ------------------------------------------------------
 if [ "$TAG" = "latest" ]; then
-  RELEASE_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
-    || die "could not resolve the latest public release."
+  if ! RELEASE_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")"; then
+    if [ "$REPO" = "$DEFAULT_REPO" ]; then
+      REPO="$LEGACY_REPO"
+      RELEASE_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+        || die "could not resolve the latest open-source release."
+      printf '  Using the v0.1.231 legacy release location; future releases move to %s.\n' "$DEFAULT_REPO" >&2
+    else
+      die "could not resolve the latest open-source release."
+    fi
+  fi
   TAG="${RELEASE_URL##*/}"
 fi
-case "$TAG" in
-  v[0-9]*) ;;
-  *) die "invalid release tag '$TAG' (expected vX.Y.Z)." ;;
-esac
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || die "invalid release tag '$TAG' (expected vX.Y.Z)."
 
 say "Downloading signed release ($TAG) from $REPO"
 BASE_URL="https://github.com/$REPO/releases/download/$TAG"

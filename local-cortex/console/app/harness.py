@@ -5,20 +5,17 @@ render-ready per-agent Configure view model:
 
   * `harness ∈ {claude-code, codex, kaidera, pi}` selects an
     execution lane (§4): subprocess (claude-code/codex/pi inherit
-    your subscription auth) or in-process API (kaidera calls provider APIs
-    with keys from System config).
+    subscription auth) or the in-process Kaidera Manifold API lane.
   * MODELS are per-harness:
       - claude-code → live CLI-advertised aliases + operator/fallback models
       - codex       → live Codex app-server catalog (curated fallback)
       - pi          → the host PI catalog (`pi --list-models`), grouped by provider
-                       (OpenAI-Codex subscription plus any provider/API PI can see)
-      - kaidera → the live Providers & Models catalog (app.providers),
-        grouped by provider (this lane calls provider APIs directly).
+      - kaidera     → the live Manifold model catalog (app.providers)
   * REASONING/EFFORT is per-harness (§4 / §6):
       - claude-code {low, medium, high, xhigh, max}
       - codex       per-model (currently low through xhigh/max/ultra)
       - pi          per-model from `pi --list-models` + live `--thinking` choices
-      - kaidera     per-model from each connected provider's live catalog
+      - kaidera     per-model from the live Manifold catalog
 
   * The CURRENT EFFECTIVE config for an agent is the registry value (from the
     /projects/{key}/runtime `capabilities`: harness/provider, model /
@@ -69,7 +66,7 @@ HARNESSES: dict[str, dict[str, Any]] = {
     "kaidera": {  # fitness:allow-literal canonical harness id (the own-harness lane), not a per-project literal
         "label": "Kaidera AI",
         "lane": "api",
-        "lane_label": "in-process · API keys",
+        "lane_label": "managed · Manifold",
         "model_source": "catalog",
     },
     "pi": {
@@ -802,18 +799,10 @@ def agent_config_view(
 
 
 def visible_harness_order() -> list[str]:
-    """HARNESS_ORDER filtered to the harnesses ENTITLED for this edition. DEV -> all;
-    PUBLIC -> kaidera (always free) + every harness the license grants. The single seam
-    the picker surfaces iterate, so a locked harness is never offered without a license.
-    The runtime backstop in main._chat_routing_for is the matching teeth for overrides."""
-    try:
-        from app import license as _license
-        ent = _license.entitlements()
-        return [k for k in HARNESS_ORDER if ent.has_harness(k)]
-    except Exception:
-        return list(HARNESS_ORDER)
+    """All locally installed harness integrations are available in this edition."""
+    return list(HARNESS_ORDER)
 
 
 def harness_options() -> list[dict[str, str]]:
-    """The harness <select> options (value + label), in the spec order, edition-gated."""
+    """The harness <select> options (value + label), in the spec order."""
     return [{"value": k, "label": HARNESSES[k]["label"]} for k in visible_harness_order()]

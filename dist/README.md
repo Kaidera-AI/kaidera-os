@@ -1,9 +1,9 @@
 # Secure distribution and install
 
-Kaidera OS public releases are published through
-[`Kaidera-AI/homebrew-kaidera`](https://github.com/Kaidera-AI/homebrew-kaidera).
+Kaidera OS open-source releases are published from
+[`Kaidera-AI/kaidera-os`](https://github.com/Kaidera-AI/kaidera-os).
 Each release carries a versioned source archive, SHA-256 sidecar, and minisign
-signature. macOS disk images are also Developer ID signed and notarized.
+signature.
 
 ## Trust model
 
@@ -14,26 +14,28 @@ The signed bootstrap verifies two properties before extracting or running code:
 2. **Integrity:** SHA-256 detects corruption or replacement in transit.
 
 The release assets are public. GitHub authentication is not required for install.
-Provider credentials, license-session tokens, and customer data are never release
-assets.
+Provider credentials and customer data are never release assets.
 
 ## Install a public release
 
 Homebrew, npm, and the standard curl installer are documented in the
-[distribution repository](https://github.com/Kaidera-AI/homebrew-kaidera).
+[project README](../README.md).
 
 For explicit minisign verification, install `curl` and `minisign`, then run:
 
 ```sh
-curl -fsSL \
-  https://github.com/Kaidera-AI/homebrew-kaidera/releases/latest/download/bootstrap.sh \
-  -o bootstrap.sh
-bash bootstrap.sh
+repo=Kaidera-AI/kaidera-os
+path=main/dist/bootstrap.sh
+curl -fsSL "https://raw.githubusercontent.com/$repo/$path" | bash
 ```
 
 The bootstrap resolves the latest public tag, downloads the archive plus both
 verification sidecars, verifies them, synchronizes the application into
 `~/kaidera-os`, and runs `install.sh`.
+
+The existing `v0.1.231` archive remains at its pre-split
+`Kaidera-AI/homebrew-kaidera` URL. The bootstrap falls back to that location
+only until the first later source release is published from this repository.
 
 Pin a release or change the install destination when needed:
 
@@ -55,9 +57,9 @@ dist/release.sh
 ```
 
 `dist/release.sh` refuses a dirty worktree, runs package completeness and clean-room
-checks, builds from committed source, bakes the public edition, writes the generated
-edition marker and manifest, scans for credentials, verifies the archive, signs it,
-and publishes to the repository selected by `KAIDERA_REPO`.
+checks, archives committed source, writes the manifest, scans for credentials,
+verifies the archive, signs it, and publishes to the repository selected by
+`KAIDERA_REPO`.
 
 Never expose the minisign private key to untrusted pull-request code. Keep it
 password-protected and backed up offline. For automation, use a protected release
@@ -65,7 +67,8 @@ environment with explicit owner approval.
 
 ## Source correspondence
 
-Every object release must identify the exact public-source commit used to build it
-and offer equivalent access to the corresponding source. Public source lives at
+Every object release must identify the exact public-source commit used to build
+it and offer equivalent access to the corresponding source. Public source lives
+at
 [`Kaidera-AI/kaidera-os`](https://github.com/Kaidera-AI/kaidera-os) under
 `AGPL-3.0-only`.

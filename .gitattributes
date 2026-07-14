@@ -1,4 +1,87 @@
+# Paths excluded from `git archive` release tarballs (dist/release.sh). The distributable ships
+# code, not this checkout's data: no agents, projects, memory, backups, or credentials travel.
+# Operators connect managed Manifold and create their own projects after installation.
 .gitattributes export-ignore
-
-# Generated bundles can contain third-party template and shader whitespace.
+.agents/backups/ export-ignore
+.agents/.DS_Store export-ignore
+.agents/.pytest_cache/ export-ignore
+.agents/agents/ export-ignore
+.agents/bootstrap/ export-ignore
+.agents/prompts/ export-ignore
+.agents/roles/ export-ignore
+.agents/rules/ export-ignore
+.agents/scripts/users/ export-ignore
+.agents/skills/ export-ignore
+.agents/tests/ export-ignore
+.agents/data/vendor/ export-ignore
+.agents/BRAND_COMPATIBILITY.md export-ignore
+# Pre-Kaidera data migrations remain in source for historical replay. Public v0.1.231+
+# installs start from the canonical full schemas, and supported upgrades have already
+# applied these idempotent transitions.
+.agents/data/appdb/2026-07-11-kaidera-brand-settings.sql export-ignore
+.agents/data/migrations/2026-05-08-phase-c-cortex-app-role.sql export-ignore
+.agents/data/migrations/2026-05-08-phase-c-rls.sql export-ignore
+.agents/data/migrations/2026-05-09-phase-c-rls-audit-extension.sql export-ignore
+.agents/data/migrations/2026-06-15-identity-v2-2-function-fix.sql export-ignore
+.agents/data/migrations/2026-06-24-rename-*.sql export-ignore
+.agents/data/migrations/2026-07-10-kaidera-brand-cutover.sql export-ignore
+.agents/data/migrations/2026-07-11-kaidera-brand-runtime-json.sql export-ignore
+# Beat is shippable heartbeat/control plumbing. Legacy autonomous agent-loop
+# substrates are intentionally not part of the clean Kaidera OS redistributable.
+beat/state/ export-ignore
+beat/logs/ export-ignore
+beat/__pycache__/ export-ignore
+beat/tests/ export-ignore
+beat/agent-loop.sh export-ignore
+beat/run-agent-loop.sh export-ignore
+beat/agent_loop_*.py export-ignore
+beat/harness-adapters/ export-ignore
+beat/worktree-isolation.sh export-ignore
+beat/worktree-manager.sh export-ignore
+beat/pulse-banner.sh export-ignore
+beat/build-nic-package.sh export-ignore
+beat/install-e75-agent-loops.sh export-ignore
+beat/install-kaidera-agent-loops.sh export-ignore
+beat/*.md export-ignore
+beat/*.mission.md export-ignore
+.agents/launchers/_run-agent.sh export-ignore
+.agents/launchers/agent-loop.sh export-ignore
+.agents/launchers/run-beat.sh export-ignore
+.agents/scripts/cortex-launch export-ignore
+Program/ export-ignore
+.obsidian/ export-ignore
+.cortex/ export-ignore
+.playwright-cli/ export-ignore
+_research/ export-ignore
+_adr/ export-ignore
+_design_knowledge/ export-ignore
+_setup/ export-ignore
+ALL_KAIDERA_OS_DOCUMENTATION.md export-ignore
+CORTEX_QUICKSTART.md export-ignore
+CORTEX_REFERENCE.md export-ignore
+docs/ export-ignore
+redistributable/docs/ -export-ignore
+scripts/fitness/tests/ export-ignore
+__pycache__/ export-ignore
+*.pyc export-ignore
+# Turnkey project packages are fully external to this repo; the harness carries
+# zero turnkey or project source.
+plans/ export-ignore
+# External project memory imports are internal reference material. An installation gets
+# its own Cortex memory and never inherits another project's internal handoffs.
+.agents/memory/imports/external/ export-ignore
+local-cortex/console/app/__pycache__/ export-ignore
+local-cortex/*.md export-ignore
+local-cortex/RUNTIME_PROFILE.md -export-ignore
+local-cortex/console/CHANGELOG.md export-ignore
+local-cortex/docs/ export-ignore
+local-cortex/git-hooks/ export-ignore
+# Generated Vite assets can embed third-party shader/template whitespace. Keep source
+# whitespace checks strict without treating compiled bundle strings as source errors.
 local-cortex/console/spa/dist/** -whitespace
+# Workspace and runtime files are generated per deployment. Shipping this checkout's
+# machine-local paths or defaults would create inert cross-project guards on another host.
+.agents/config/workspace.json export-ignore
+.agents/config/runtime.yaml export-ignore
+.agents/launchers/_archive_nonlocal_kaidera/ export-ignore
+beat/run-*.sh export-ignore

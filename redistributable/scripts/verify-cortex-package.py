@@ -347,28 +347,67 @@ def check_manifest(root: Path) -> dict[str, Any]:
     return {"files": len(entries)}
 
 
-def check_public_edition(root: Path) -> dict[str, Any]:
+def _assignment_constant(tree: ast.Module, name: str) -> list[Any]:
+    values: list[Any] = []
+    for node in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        if isinstance(target, ast.Name) and target.id == name and isinstance(value, ast.Constant):
+            values.append(value.value)
+    return values
+
+
+def _is_immutable_open_source_module(tree: ast.Module) -> bool:
+    if _assignment_constant(tree, "OPEN_SOURCE") != ["open-source"]:
+        return False
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != "edition":
+            continue
+        returns = [
+            child.value
+            for child in ast.walk(node)
+            if isinstance(child, ast.Return)
+        ]
+        return len(returns) == 1 and isinstance(returns[0], ast.Name) and returns[0].id == "OPEN_SOURCE"
+    return False
+
+
+def check_packaged_edition(root: Path) -> dict[str, Any]:
     marker = root / ".kaidera-os-edition"
-    if marker.read_text(encoding="utf-8").strip() != "public":
-        raise VerificationError("redistributable edition marker is not public")
+    selected = marker.read_text(encoding="utf-8").strip()
+    if selected not in {"open-source", "commercial", "public"}:
+        raise VerificationError(f"unsupported redistributable edition marker: {selected!r}")
 
     module = root / "local-cortex/console/app/edition.py"
     tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
-    assignments = [
-        node.value
-        for node in tree.body
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "_BAKED_EDITION"
-    ]
-    if len(assignments) != 1:
+    baked = _assignment_constant(tree, "_BAKED_EDITION")
+    immutable_open_source = selected == "open-source" and _is_immutable_open_source_module(tree)
+    if baked != [selected] and not immutable_open_source:
         raise VerificationError(
-            f"expected one _BAKED_EDITION assignment, found {len(assignments)}"
+            f"redistributable edition module does not match marker {selected!r}"
         )
-    value = assignments[0]
-    if not isinstance(value, ast.Constant) or value.value != "public":
-        raise VerificationError("redistributable edition module is not baked public")
-    return {"marker": "public", "baked_edition": "public"}
+
+    if selected == "commercial":
+        keys_path = root / ".kaidera-os-license-verify-keys"
+        try:
+            keys = json.loads(keys_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError) as exc:
+            raise VerificationError("commercial license verification keys are missing or invalid") from exc
+        if not isinstance(keys, dict) or not keys or any(
+            not str(k or "").strip() or not isinstance(v, str) or not v.strip()
+            for k, v in keys.items()
+        ):
+            raise VerificationError("commercial license verification keys must be a non-empty string map")
+
+    return {
+        "marker": selected,
+        "baked_edition": selected,
+        "license_verify_keys": len(keys) if selected == "commercial" else 0,
+    }
 
 
 def is_text_file(path: Path) -> bool:
@@ -694,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
         if root is not None:
             run_check(results, "required-files", lambda: check_required_files(root))
             run_check(results, "manifest", lambda: check_manifest(root))
-            run_check(results, "public-edition", lambda: check_public_edition(root))
+            run_check(results, "packaged-edition", lambda: check_packaged_edition(root))
             run_check(results, "static-portability", lambda: check_portability(root))
             run_check(results, "postgres-only-runtime", lambda: check_postgres_only_runtime(root))
             run_check(results, "shell-syntax", lambda: check_shell_syntax(root))

@@ -48,8 +48,6 @@ const EMPTY_GRAPH: GraphPayload = {
 const settingsClient: SettingsWriteClient = {
   setAppSetting: vi.fn().mockResolvedValue({ project: 'kaidera-os', settings: {}, store_connected: true, ok: true }),
   setAppSettings: vi.fn().mockResolvedValue({ project: 'kaidera-os', settings: {}, store_connected: true, ok: true }),
-  addCustomProvider: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, added: null, error: null, custom_providers: [] }),
-  deleteCustomProvider: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, removed: false, error: null, custom_providers: [] }),
   providerKeyTest: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, detail: 'ok', status: 'ok', label: '' }),
   setWorkspace: vi.fn().mockResolvedValue({ project: 'kaidera-os', project_key: 'kaidera-os', ok: true, repo_root: null, previous_repo_root: null, error: null }),
   cortexConfig: vi.fn().mockResolvedValue({

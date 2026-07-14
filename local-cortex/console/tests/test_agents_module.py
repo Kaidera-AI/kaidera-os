@@ -491,20 +491,23 @@ def test_module_exports_service_and_router():
 # row + an embedding row to prove only chat rows are offered as model options.
 FAKE_CATALOG_GROUPS = [
     {
-        "provider": "anthropic",
-        "label": "Anthropic",
-        "configured": True,  # a real catalog group carries this (view_catalog); the kaidera picker now keeps only configured providers
-        "rows": [
-            {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "type": "chat"},
-            {"id": "text-embedding-x", "display_name": "Embedding X", "type": "embedding"},
-        ],
-    },
-    {
-        "provider": "openai",
-        "label": "OpenAI",
+        "provider": "kaidera-manifold",
+        "label": "Kaidera AI Manifold",
         "configured": True,
         "rows": [
-            {"id": "gpt-5.5", "display_name": "GPT-5.5", "type": "chat"},
+            {
+                "id": "ollama-cloud/minimax-m3",
+                "display_name": "MiniMax M3",
+                "type": "chat",
+                "reasoning_levels": ["low", "medium", "high"],
+            },
+            {
+                "id": "vendor/future-model",
+                "display_name": "Future Model",
+                "type": "chat",
+                "reasoning_levels": ["low", "future"],
+            },
+            {"id": "text-embedding-x", "display_name": "Embedding X", "type": "embedding"},
         ],
     },
 ]
@@ -631,32 +634,17 @@ def test_build_config_catalog_emits_per_model_reasoning_for_kaidera():
 
     groups = [
         {
-            "provider": "openai",
-            "label": "OpenAI",
+            "provider": "kaidera-manifold",
+            "label": "Kaidera AI Manifold",
             "configured": True,
             "rows": [
-                {"id": "gpt-5.5", "display_name": "GPT-5.5", "type": "chat",
+                {"id": "vendor/reasoning", "display_name": "Reasoning", "type": "chat",
                  "reasoning_levels": ["minimal", "low", "medium", "high", "xhigh"]},
-            ],
-        },
-        {
-            "provider": "fireworks",
-            "label": "Fireworks",
-            "configured": True,
-            "rows": [
-                # base kimi-k2 is a known non-reasoner → empty levels → OMITTED.
-                {"id": "accounts/fireworks/models/kimi-k2", "display_name": "Kimi K2",
+                {"id": "vendor/plain", "display_name": "Plain",
                  "type": "chat", "reasoning_levels": []},
-                {"id": "accounts/fireworks/models/kimi-k2-thinking", "display_name": "Kimi Thinking",
+                {"id": "vendor/thinking", "display_name": "Thinking",
                  "type": "chat", "reasoning_levels": ["low", "medium", "high"]},
-            ],
-        },
-        {
-            "provider": "deepseek",
-            "label": "DeepSeek",
-            "configured": True,
-            "rows": [
-                {"id": "deepseek-v4", "display_name": "DeepSeek V4", "type": "chat",
+                {"id": "vendor/toggle", "display_name": "Toggle", "type": "chat",
                  "reasoning_levels": ["supported"]},
             ],
         },
@@ -665,23 +653,21 @@ def test_build_config_catalog_emits_per_model_reasoning_for_kaidera():
 
     rbm = cat["reasoning_by_model"]
     # the selected model's own levels are keyed by the (namespaced) model value.
-    assert [o["value"] for o in rbm["kaidera:openai/gpt-5.5"]] == [
+    assert [o["value"] for o in rbm["kaidera:kaidera-manifold/vendor/reasoning"]] == [
         "minimal", "low", "medium", "high", "xhigh"
     ]
-    assert [o["value"] for o in rbm["kaidera:fireworks/accounts/fireworks/models/kimi-k2-thinking"]] == [
+    assert [o["value"] for o in rbm["kaidera:kaidera-manifold/vendor/thinking"]] == [
         "low", "medium", "high"
     ]
-    # the toggle-only model → a single "on" option.
-    assert [o["value"] for o in rbm["kaidera:deepseek/deepseek-v4"]] == ["on"]
-    # the non-reasoning base kimi-k2 is ABSENT (the SPA hides the dropdown).
-    assert "kaidera:fireworks/accounts/fireworks/models/kimi-k2" not in rbm
+    assert [o["value"] for o in rbm["kaidera:kaidera-manifold/vendor/toggle"]] == ["on"]
+    assert "kaidera:kaidera-manifold/vendor/plain" not in rbm
 
     # each kaidera model option ALSO carries its raw reasoning_levels.
     by_value = {m["value"]: m for m in cat["models_by_harness"]["kaidera"]}
-    assert by_value["openai/gpt-5.5"]["reasoning_levels"] == [
+    assert by_value["kaidera-manifold/vendor/reasoning"]["reasoning_levels"] == [
         "minimal", "low", "medium", "high", "xhigh"
     ]
-    assert by_value["fireworks/accounts/fireworks/models/kimi-k2"]["reasoning_levels"] == []
+    assert by_value["kaidera-manifold/vendor/plain"]["reasoning_levels"] == []
 
 
 def test_build_config_catalog_groups_catalog_lanes_by_provider():
@@ -694,24 +680,19 @@ def test_build_config_catalog_groups_catalog_lanes_by_provider():
     cat = build_config_catalog(harness_cfg, FAKE_CATALOG_GROUPS, FAKE_PI_CATALOG_GROUPS)
     mbh = cat["models_by_harness"]
 
-    # kaidera + pi (catalog source) get the flattened provider-grouped chat
-    # models; the embedding row is dropped.
+    # Kaidera gets only Manifold chat rows; the embedding row is dropped.
     own = mbh["kaidera"]
     values = {m["value"] for m in own}
     assert values == {
-        "anthropic/claude-opus-4-8",
-        "openai/gpt-5.5",
-        "fireworks/accounts/fireworks/models/kimi-k2p6",
-        "ollama-cloud/qwen3-coder:480b",
+        "kaidera-manifold/ollama-cloud/minimax-m3",
+        "kaidera-manifold/vendor/future-model",
     }
     assert "text-embedding-x" not in values
     # each option carries a provider tag for client-side <optgroup> grouping
     by_value = {m["value"]: m for m in own}
-    assert by_value["anthropic/claude-opus-4-8"]["provider"] == "anthropic"
-    assert by_value["openai/gpt-5.5"]["provider"] == "openai"
-    assert by_value["fireworks/accounts/fireworks/models/kimi-k2p6"]["provider"] == "fireworks"
-    assert by_value["ollama-cloud/qwen3-coder:480b"]["provider"] == "ollama-cloud"
-    assert by_value["anthropic/claude-opus-4-8"]["label"] == "Claude Opus 4.8"
+    assert by_value["kaidera-manifold/ollama-cloud/minimax-m3"]["provider"] == "kaidera-manifold"
+    assert by_value["kaidera-manifold/vendor/future-model"]["provider"] == "kaidera-manifold"
+    assert by_value["kaidera-manifold/ollama-cloud/minimax-m3"]["label"] == "MiniMax M3"
 
     pi = mbh["pi"]
     pi_by_value = {m["value"]: m for m in pi}
@@ -720,28 +701,25 @@ def test_build_config_catalog_groups_catalog_lanes_by_provider():
     assert pi_by_value["ollama-cloud/qwen3-coder:480b"]["provider"] == "ollama-cloud"
 
 
-def test_build_config_catalog_keeps_provider_catalog_rows_ahead_of_pi_bridge():
-    """When Providers already has rows for an API provider, Kaidera AI uses those rows
-    and does not duplicate the same provider from PI's extension catalog."""
+def test_build_config_catalog_does_not_bridge_pi_providers_into_kaidera():
+    """PI's own provider catalog never becomes a direct Kaidera provider lane."""
     from app import harness as harness_cfg
     from app.agents.service import build_config_catalog
 
     provider_groups = [
         {
-            "provider": "ollama-cloud",
-            "label": "Ollama Cloud",
+            "provider": "direct-provider",
+            "label": "Direct Provider",
             "configured": True,
             "rows": [
-                {"id": "glm-5.1:cloud", "display_name": "glm-5.1:cloud", "type": "chat"},
+                {"id": "direct-model", "display_name": "Direct Model", "type": "chat"},
             ],
         }
     ]
 
     cat = build_config_catalog(harness_cfg, provider_groups, FAKE_PI_CATALOG_GROUPS)
     own = cat["models_by_harness"]["kaidera"]
-    values = [m["value"] for m in own if m.get("provider") == "ollama-cloud"]
-
-    assert values == ["ollama-cloud/glm-5.1:cloud"]
+    assert own == []
 
 
 def test_build_config_catalog_no_provider_keys_empty_catalog_lane():

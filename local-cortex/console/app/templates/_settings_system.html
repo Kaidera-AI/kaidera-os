@@ -195,17 +195,5 @@
       </div>
     </form>
 
-    {#
-      CUSTOM PROVIDERS — operator-added provider credentials (name + base URL +
-      masked API key) beyond the fixed built-in keys above. Kept OUTSIDE the main
-      #sys-form (it has its own HTMX POSTs to /settings/system/custom-provider),
-      so it never interferes with the System save. The region self-swaps on
-      add/remove (#sys-custom-providers).
-    #}
-    <div class="set-subhead">
-      <span class="ssh-t">Custom providers</span>
-      <span class="ssh-s">Add an extra provider with its own base URL + API key. Stored locally + masked, separate from the System save above.</span>
-    </div>
-    {% include "_settings_custom_providers.html" %}
   </div>
 </div>

@@ -4,5 +4,5 @@
 /install.sh @amad-malik
 /update.sh @amad-malik
 /uninstall.sh @amad-malik
-/local-cortex/console/app/license.py @amad-malik
+/local-cortex/console/app/providers.py @amad-malik
 /scripts/fitness/ @amad-malik

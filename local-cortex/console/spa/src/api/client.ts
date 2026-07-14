@@ -24,8 +24,6 @@
  *   GET  /settings/{project}/system-schema     → SystemSchema            (3a)
  *   GET  /settings/{project}/providers         → ProvidersCatalog        (3a)
  *   GET  /settings/{project}/providers/config  → ProvidersConfig         (Track 2: configured providers)
- *   POST /settings/{project}/custom-providers          → CustomProviderResult  (3a write)
- *   POST /settings/{project}/custom-providers/delete   → CustomProviderResult  (3a write)
  *   POST /settings/{project}/provider-key-test → KeyTestResult           (3a probe)
  *   POST /settings/{project}/workspace         → WorkspaceResult         (3a write)
  *
@@ -59,7 +57,6 @@ import type {
   CortexEmbeddingJobResult,
   CortexConfigResult,
   CortexPlatformConfig,
-  CustomProviderResult,
   DispatchActivity,
   DispatchBoard,
   ExplainList,
@@ -103,10 +100,6 @@ import type {
   ScheduledJobWriteResult,
   SkillBindResult,
   SkillInstallResult,
-  BillingStatus,
-  LicenseLoginRequest,
-  LicenseStatus,
-  LicenseTransportResult,
   SkillsPayload,
   SystemSchema,
   UpdateApplyResult,
@@ -925,39 +918,6 @@ export const api = {
     postJson<AppSettingsWriteResult>(`/settings/${senc(project)}/app`, { settings }, signal),
 
   /**
-   * The license posture for the Settings → License panel — `GET /settings/{project}/license`.
-   * edition + validity + customer/expiry + resolved entitlements (unlocked harnesses +
-   * capacity caps). Never carries the raw token. Apply a token via `setAppSetting(project,
-   * 'license_key', token)` then re-fetch — the gates re-read it live.
-   */
-  license: (project: string, signal?: AbortSignal) =>
-    getJson<LicenseStatus>(`/settings/${senc(project)}/license`, signal),
-
-  licenseLogin: (project: string, request: LicenseLoginRequest, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/login`, request, signal),
-
-  licenseActivate: (project: string, orgLoginToken: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(
-      `/settings/${senc(project)}/license/activate`,
-      { org_login_token: orgLoginToken },
-      signal,
-    ),
-
-  licenseHeartbeat: (project: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/heartbeat`, {}, signal),
-
-  licenseRestore: (project: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/restore`, {}, signal),
-
-  /**
-   * The Billing-tab view — `GET /settings/{project}/billing`: per-entitlement usage
-   * (counted from Cortex) vs the entitled total, the wallet balance, and active add-ons.
-   * Buying add-ons / topping up the wallet lives in the Kaidera AI cust-portal (`portal_url`).
-   */
-  billing: (project: string, signal?: AbortSignal) =>
-    getJson<BillingStatus>(`/settings/${senc(project)}/billing`, signal),
-
-  /**
    * Save one agent's console-local override (designation/harness/model/…). Wraps
    * the field patch as `{override: {...}}` (MERGE semantics server-side: a blank
    * value clears that field). Returns the post-save effective override +
@@ -1063,41 +1023,10 @@ export const api = {
       signal,
     ),
 
-  // -- settings writes (step 3a) --------------------------------------------
   /**
-   * Add an operator-defined custom provider (`name` + `base_url` + `api_key`).
-   * Returns `{ok, added, error, custom_providers}` where `custom_providers` is the
-   * refreshed MASKED list (the raw key is NEVER echoed back). `POST /settings/
-   * {project}/custom-providers`.
-   */
-  addCustomProvider: (
-    project: string,
-    body: { name: string; base_url: string; api_key: string },
-    signal?: AbortSignal,
-  ) =>
-    postJson<CustomProviderResult>(
-      `/settings/${senc(project)}/custom-providers`,
-      body,
-      signal,
-    ),
-
-  /**
-   * Remove a custom provider by `id` (or `name`). Returns `{ok, removed, error,
-   * custom_providers}` with the refreshed masked list. `POST /settings/{project}/
-   * custom-providers/delete`.
-   */
-  deleteCustomProvider: (project: string, id: string, signal?: AbortSignal) =>
-    postJson<CustomProviderResult>(
-      `/settings/${senc(project)}/custom-providers/delete`,
-      { id },
-      signal,
-    ),
-
-  /**
-   * Probe a provider key (read-only — lists models / key-info, never a completion,
-   * so it spends no tokens). `provider` is a built-in secret-key field (e.g.
-   * `anthropic_api_key`) or `custom:<id>`. Pass `key` to test a freshly-typed value,
-   * or `use_stored:true` / omit it to test the stored/env key. The key is NEVER
+   * Probe the managed Manifold connection without running inference. Pass `key` to
+   * test a freshly typed value, or `use_stored:true` to use local configuration.
+   * The key is NEVER
    * echoed — only `{ok, detail, status, label}`. `POST /settings/{project}/
    * provider-key-test`.
    */

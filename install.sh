@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Kaidera OS local-deployment installer - NATIVE console + Cortex/DB containers.
+# Kaidera OS local-deployment installer - host console + Cortex/DB containers.
 #
-# After this runs, the app is self-contained: a native console (uvicorn) on this host +
+# After this runs, the app is self-contained: a console process (uvicorn) on this host +
 # the Cortex 6-layer + app-DB in containers. Works on macOS or a fresh Linux VM with no
-# Mac-host dependency - the kaidera harness calls provider APIs directly with keys you
-# enter in Settings. Herdr is installed as an external runtime prerequisite; it is
+# Mac-host dependency - the kaidera harness calls the configured Manifold edge.
+# Herdr is installed as an external runtime prerequisite; it is
 # not bundled in this repository or redistributable package.
 # Design: docs/2026-06-13-selfcontained-redesign-plan.md
 set -euo pipefail
@@ -126,7 +126,7 @@ esac
 if [ -n "${KAIDERA_AUTH_ENABLED:-}" ]; then
   AUTH_ENABLED="$KAIDERA_AUTH_ENABLED"
 elif [ "$OS" = "Darwin" ] && [ "$CONSOLE_HOST" = "127.0.0.1" ] && [ -z "$PUBLIC_BASE_URL" ]; then
-  # Local Mac operator packages are private desktop apps, not public web apps.
+  # A loopback-only Mac install is private to the current machine.
   AUTH_ENABLED="0"
 else
   # Hosted/shared installs stay fail-closed unless the operator explicitly opts out.
@@ -135,28 +135,6 @@ fi
 case "$(printf '%s' "$AUTH_ENABLED" | tr '[:upper:]' '[:lower:]')" in
   0|false|no|off) AUTH_ENABLED="0" ;;
   *) AUTH_ENABLED="1" ;;
-esac
-EDITION="${KAIDERA_OS_EDITION:-}"
-EDITION_SOURCE="environment"
-if [ -z "$EDITION" ]; then
-  EDITION_MARKER="$REPO_ROOT/.kaidera-os-edition"
-  if [ -f "$EDITION_MARKER" ]; then
-    EDITION="$(tr -d '[:space:]' < "$EDITION_MARKER")"
-    EDITION_SOURCE="release marker"
-  elif [ -d "$REPO_ROOT/.git" ]; then
-    EDITION="dev"
-    EDITION_SOURCE="source checkout"
-  else
-    # An unpackaged, non-source tree must fail toward the redistributable posture.
-    EDITION="public"
-    EDITION_SOURCE="unmarked archive"
-  fi
-fi
-case "$(printf '%s' "$EDITION" | tr '[:upper:]' '[:lower:]')" in
-  public) EDITION="public" ;;
-  dev) EDITION="dev" ;;
-  "") die "Kaidera OS edition marker is empty (expected public or dev)" ;;
-  *) die "Invalid KAIDERA_OS_EDITION='$EDITION' (expected public or dev)" ;;
 esac
 command -v docker >/dev/null 2>&1 || die "Docker not found — install Docker Engine (Linux) / Docker Desktop (macOS) first."
 docker compose version >/dev/null 2>&1 || die "'docker compose' v2 plugin not found."
@@ -182,7 +160,6 @@ if [ "$AUTH_ENABLED" = "0" ]; then
 else
   ok "auth enabled (set KAIDERA_AUTH_ENABLED=0 only for private/local installs)"
 fi
-ok "edition: $EDITION ($EDITION_SOURCE)"
 # Disk preflight. The default provider-backed stack is intentionally lighter
 # because it no longer builds the PyTorch-based local embed worker. Warn loudly
 # when operators opt into local embed/full multimodal mode because those images
@@ -569,29 +546,6 @@ ${AUTH_EMAIL_RUNNER_LINES}${AUTH_DEPLOY_RUNNER_LINES}${EXTENSION_RUNNER_LINES}  
 EOF
 chmod +x "$RUNNER"
 ok "run script: $RUNNER"
-# Persist the install root for packaged native shells. A dragged-to-Applications
-# menu-bar app cannot derive the source checkout path from __file__, so it reads
-# this non-secret pointer (or KAIDERA_OS_HOME) before falling back to source paths.
-OPERATOR_CONFIG_DIR="$HOME/.kaidera-os"
-OPERATOR_CONFIG="$OPERATOR_CONFIG_DIR/operator.json"
-mkdir -p "$OPERATOR_CONFIG_DIR" 2>/dev/null || true
-if command -v python3 >/dev/null 2>&1; then
-  python3 - "$REPO_ROOT" "$OPERATOR_CONFIG" <<'PY' || true
-import json
-import sys
-from pathlib import Path
-
-repo_root = str(Path(sys.argv[1]).resolve())
-path = Path(sys.argv[2])
-path.parent.mkdir(parents=True, exist_ok=True)
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(json.dumps({"repo_root": repo_root}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-tmp.replace(path)
-PY
-  ok "native operator install root recorded in $OPERATOR_CONFIG"
-else
-  skip "python3 unavailable for operator root config - set KAIDERA_OS_HOME=$REPO_ROOT before launching the native operator"
-fi
 # Loud warning when the operator opted into network exposure.
 case "$CONSOLE_HOST" in
   127.0.0.1|localhost|::1) ;;
@@ -683,9 +637,7 @@ EOF
     skip "no sudo found — to enable auto-start run: $MANUAL"
   fi
 elif [ "$OS" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
-  # macOS E011 path: install a per-user LaunchAgent that runs the SAME generated
-  # runner. The native/menu-bar app controls this LaunchAgent; it does not own a
-  # second service implementation.
+  # macOS path: install a per-user LaunchAgent that runs the generated runner.
   LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
   LAUNCH_AGENT_LABEL="ai.kaidera.kaidera-os.console"
   LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_LABEL.plist"
@@ -932,7 +884,7 @@ fi
 cat <<EOF
 
   The console is running as a background service (auto-starts on boot).
-$( [ "$OS" = "Darwin" ] && echo "  Manage it:  $CONSOLE_DIR/scripts/kaidera-os operator status|restart|stop|start" )
+$( [ "$OS" = "Darwin" ] && echo "  Manage it:  $CONSOLE_DIR/scripts/kaidera-os status|restart|stop|start" )
 $( [ "$OS" = "Darwin" ] && echo "  Logs:       tail -f $REPO_ROOT/local-cortex/logs/kaidera-os-console.launchd.err.log" )
 $( [ "$OS" != "Darwin" ] && echo "  Manage it:  systemctl status|restart|stop kaidera-os-console   ·   logs: journalctl -u kaidera-os-console -f" )
   (or run it in the foreground for debugging: $RUNNER)
@@ -945,9 +897,8 @@ $( [ "$CONSOLE_HOST" = "0.0.0.0" ] && echo "    ⚠ enable KAIDERA_AUTH_ENABLED=
 
 ${_AUTH_HINT}
 
-  FIRST RUN — open Settings → Providers and add at least ONE provider API key
-  (e.g. Ollama Cloud for kimi, or OpenAI / Anthropic). The default 'kaidera' harness
-  needs no CLI: it calls providers directly with the key you store in Settings.
+  FIRST RUN — open Settings → Providers and add a Kaidera AI Manifold inference
+  key and project ID. The default 'kaidera' harness uses that managed connection.
 
   Cortex CLI: open a new shell (or \`source $PROFILE_D\`), then \`cortex-boot <name>\`.
   Herdr runtime: $HERDR_BIN
