@@ -72,6 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only without the dep
     EventSourceResponse = None
 
 try:
+    import prometheus_client as _prometheus_client
     from prometheus_client import (
         Counter,
         Histogram,
@@ -79,6 +80,8 @@ try:
         CONTENT_TYPE_LATEST,
     )
 except ModuleNotFoundError:
+    _prometheus_client = None
+
     class _NoopMetric:
         def labels(self, **_kwargs):
             return self
@@ -99,6 +102,20 @@ except ModuleNotFoundError:
         return b""
 
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+
+def _shared_metric(factory, name: str, *args, **kwargs):
+    """Reuse Cortex collectors when this module is loaded under test aliases."""
+    if _prometheus_client is None:
+        return factory(name, *args, **kwargs)
+
+    cache = getattr(_prometheus_client, "_cortex_metric_singletons", None)
+    if cache is None:
+        cache = {}
+        setattr(_prometheus_client, "_cortex_metric_singletons", cache)
+    if name not in cache:
+        cache[name] = factory(name, *args, **kwargs)
+    return cache[name]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -219,42 +236,49 @@ SHARED_KNOWLEDGE_PROJECT = os.getenv("CORTEX_SHARED_KNOWLEDGE_PROJECT", "_global
 # Prometheus Metrics
 # ---------------------------------------------------------------------------
 
-REQUEST_DURATION = Histogram(
+REQUEST_DURATION = _shared_metric(
+    Histogram,
     "cortex_request_duration_seconds",
     "HTTP request latency by method and endpoint",
     ["method", "endpoint"],
     buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
-EMBEDDING_CALLS = Counter(
+EMBEDDING_CALLS = _shared_metric(
+    Counter,
     "cortex_embedding_calls_total",
     "Total embedding API calls",
     ["model", "status"],
 )
 
-RERANK_CALLS = Counter(
+RERANK_CALLS = _shared_metric(
+    Counter,
     "cortex_rerank_calls_total",
     "Total rerank API calls",
     ["model", "status"],
 )
 
-ANALYSIS_CALLS = Counter(
+ANALYSIS_CALLS = _shared_metric(
+    Counter,
     "cortex_analysis_calls_total",
     "Total analysis LLM calls",
     ["model", "status"],
 )
 
-BOOT_CACHE_HITS = Counter(
+BOOT_CACHE_HITS = _shared_metric(
+    Counter,
     "cortex_boot_cache_hits_total",
     "Boot context cache hits",
 )
 
-BOOT_CACHE_MISSES = Counter(
+BOOT_CACHE_MISSES = _shared_metric(
+    Counter,
     "cortex_boot_cache_misses_total",
     "Boot context cache misses",
 )
 
-SEARCH_STAGE_DURATION = Histogram(
+SEARCH_STAGE_DURATION = _shared_metric(
+    Histogram,
     "cortex_search_stage_seconds",
     "Search pipeline per-stage latency",
     ["stage"],

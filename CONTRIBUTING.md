@@ -47,23 +47,26 @@ git remote add upstream https://github.com/Kaidera-AI/kaidera-os.git
 git switch -c fix/short-description
 ```
 
-The complete development environment uses Python 3.12, Node.js 22, Docker,
-ShellCheck, Ruff, mypy, and pytest. Install the Python and SPA dependencies needed
-for the area you are changing; do not commit virtual environments or generated
-runtime files.
+The complete development environment uses Python 3.12, Node.js 22, Docker, and
+ShellCheck. The Cortex API and Console pin different FastAPI versions, so keep
+their Python dependencies in separate virtual environments. Do not commit virtual
+environments or generated runtime files.
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r .agents/api/requirements.txt
-python3 -m pip install -r local-cortex/console/requirements.txt
-python3 -m pip install pytest ruff mypy
+python3.12 -m venv .venv/api
+.venv/api/bin/python -m pip install -r .agents/api/requirements-dev.txt
+
+python3.12 -m venv local-cortex/console/.venv
+local-cortex/console/.venv/bin/python -m pip install \
+  -r local-cortex/console/requirements-dev.txt
+
 cd local-cortex/console/spa && npm ci
 ```
 
 ## Validation
 
-Run tests proportional to the change. The full quality command is:
+Run tests proportional to the change. Once the two virtual environments above
+exist, the full quality command discovers them automatically:
 
 ```sh
 make qa

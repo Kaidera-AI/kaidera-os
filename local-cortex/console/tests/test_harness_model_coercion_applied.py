@@ -210,7 +210,7 @@ def test_console_extension_hooks_register_router_and_public_paths(monkeypatch):
         assert auth.is_public_path("/extensions/example/ingress/hook")
         assert not auth.is_public_path("/extensions/example/admin")
         assert app.state.extension_registered is True
-        assert "/extensions/example/ping" in {route.path for route in app.routes}
+        assert "/extensions/example/ping" in app.openapi()["paths"]
     finally:
         auth.clear_public_path_matchers()
 

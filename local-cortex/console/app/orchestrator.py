@@ -1777,8 +1777,8 @@ class Orchestrator:
             return
 
         # 2. Rate-limit — poll beats only fire after PM_BEAT_MIN_INTERVAL_S.
-        if reason == "poll":
-            last = self._pm_beat_last_ts.get(project_key, 0.0)
+        if reason == "poll" and project_key in self._pm_beat_last_ts:
+            last = self._pm_beat_last_ts[project_key]
             elapsed = time.monotonic() - last
             if elapsed < PM_BEAT_MIN_INTERVAL_S:
                 log.debug(

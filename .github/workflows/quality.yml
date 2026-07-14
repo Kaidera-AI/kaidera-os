@@ -53,8 +53,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: .agents/api/requirements.txt
-      - run: python -m pip install -r .agents/api/requirements.txt pytest pytest-asyncio pyyaml
+          cache-dependency-path: .agents/api/requirements-dev.txt
+      - run: python -m pip install -r .agents/api/requirements-dev.txt
       - name: Test Cortex API
         working-directory: .agents/api
         run: PYTHONPATH=. python -m pytest -q tests
@@ -69,10 +69,17 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: local-cortex/console/requirements.txt
-      - run: >-
-          python -m pip install -r local-cortex/console/requirements.txt
-          pytest pytest-asyncio
+          cache-dependency-path: local-cortex/console/requirements-dev.txt
+      - run: python -m pip install -r local-cortex/console/requirements-dev.txt
+      - name: Lint Python
+        run: |
+          ruff check .
+          mypy --ignore-missing-imports --follow-imports=skip --check-untyped-defs \
+            local-cortex/console/app/auth.py \
+            local-cortex/console/app/harness_runner.py \
+            local-cortex/console/app/orchestrator.py \
+            local-cortex/console/app/settings.py \
+            local-cortex/console/app/skill_embed.py
       - name: Test Kaidera OS Console
         working-directory: local-cortex/console
         run: python -m pytest -q
