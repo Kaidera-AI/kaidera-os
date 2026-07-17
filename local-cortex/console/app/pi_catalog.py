@@ -173,10 +173,9 @@ def _harness_headers() -> dict[str, str]:
 async def _list_pi_model_groups_via_bridge(timeout_s: float) -> list[dict[str, Any]]:
     """Fetch PI model groups from the host harness-service ``/models/pi`` bridge.
 
-    The containerized console has no ``pi`` CLI, so it asks the HOST service (which owns
-    the CLI + OAuth/provider login state) for the SAME provider-group shape the local
-    parse produces — codex subscription AND ollama-cloud/fireworks/openrouter. Consumes
-    only model ids + metadata, never raw provider keys. Degrades to ``[]``.
+    The containerized console has no ``pi`` CLI, so it asks the host service for
+    the same model-group shape produced locally. It consumes only model ids and
+    metadata and degrades to ``[]``.
     """
     try:
         async with httpx.AsyncClient(
@@ -207,8 +206,8 @@ async def list_pi_model_groups(
     (local mode) we shell ``pi --list-models`` directly. Either way the shape is the
     same provider-group catalog the SPA config picker consumes.
 
-    Read-only and token-safe: never reads PI auth files, never logs raw command output.
-    Environment is preserved so PI sees whatever provider keys/login the host launched.
+    Read-only and token-safe: never reads PI auth files, never logs raw command output,
+    and strips API credentials from the discovery subprocess.
 
     STALE-WHILE-REVALIDATE (`_PI_CATALOG_CACHE_SECONDS`): a read returns the cached list
     instantly and NEVER blocks on the ~6-8s `pi` cold-start. A cold/stale cache returns the
@@ -247,6 +246,17 @@ async def _refresh_pi_catalog(program: str, timeout_s: float) -> None:
         _pi_catalog_cache["expires"] = time.monotonic() + _PI_CATALOG_CACHE_SECONDS
 
 
+def _catalog_env() -> dict[str, str]:
+    """Return a discovery environment without API credentials."""
+    blocked = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+    suffixes = ("_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN")
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in blocked and not key.endswith(suffixes)
+    }
+
+
 def _shell_pi_list_models(program: str, timeout_s: float) -> str:
     """Blocking `pi --list-models` → combined stdout+stderr text. Degrades to "".
 
@@ -258,7 +268,7 @@ def _shell_pi_list_models(program: str, timeout_s: float) -> str:
             [program, "--list-models"],
             capture_output=True,
             timeout=timeout_s,
-            env=dict(os.environ),
+            env=_catalog_env(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return ""
@@ -272,7 +282,7 @@ def _shell_pi_help(program: str, timeout_s: float) -> str:
             [program, "--help"],
             capture_output=True,
             timeout=timeout_s,
-            env=dict(os.environ),
+            env=_catalog_env(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return ""
@@ -280,7 +290,7 @@ def _shell_pi_help(program: str, timeout_s: float) -> str:
 
 
 def _resolve_pi_program(program: str) -> str:
-    return resolve_latest_executable(program, env=os.environ)
+    return resolve_latest_executable(program, env=_catalog_env())
 
 
 async def _list_pi_model_groups_via_cli(program: str, timeout_s: float) -> list[dict[str, Any]]:

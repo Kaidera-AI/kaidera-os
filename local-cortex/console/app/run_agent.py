@@ -680,60 +680,21 @@ def _parse_frontmatter_min(block: str) -> dict[str, Any]:
     return out
 
 
-def _skill_route_text(sk: dict[str, Any]) -> str:
-    """The per-skill ROUTING TEXT — name + description + frontmatter ``when_to_load`` +
-    ``tags`` — built the SAME way the keyword selector assembles its matchable text.
-
-    This is the single source of "what text represents this skill", shared by both the
-    keyword overlap scorer (which tokenizes it) and the semantic embedder (which embeds
-    it). PURE + TOTAL: a bad/unreadable skill yields whatever text is available (frontmatter
-    read returns {} on any miss), never raises."""
-    try:
-        fm = _skill_frontmatter(sk.get("body_ref"))
-    except Exception:  # pragma: no cover - defensive: _skill_frontmatter is already total
-        fm = {}
-    light = " ".join(str(sk.get(k) or "") for k in ("name", "description"))
-    tags = fm.get("tags")
-    tags_txt = " ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags or "")
-    when = str(fm.get("when_to_load") or "")
-    return " ".join(p for p in (light, when, tags_txt) if p).strip()
-
-
 def _select_skills(task_text: str, skills: list[dict[str, Any]], max_n: int) -> list[dict[str, Any]]:
-    """HYBRID on-demand skill selector (no model call on the hot path, per
+    """Deterministic on-demand skill selector (no model call on the hot path, per
     SKILLS_ON_DEMAND.md §5.3). Picks the <=max_n skills most relevant to ``task_text``,
     so a worker's system prompt carries only task-relevant skills instead of every
     globally-delivered skill.
 
-    SCORING — semantic + keyword
-    ----------------------------
+    SCORING
+    -------
     - Small set (``len(skills) <= max_n``) → returned UNCHANGED (nothing to select).
     - KEYWORD score (always computed): token overlap between the (tokenized, stopword-
       stripped) task and the skill's matchable text. ``when_to_load`` + ``tags`` count
       ~2x name/description (the routing fields). Normalized to 0..1 by the max keyword
       score seen (guarded for div-0).
-    - SEMANTIC score (best-effort): embed each skill's routing text (``kind="document"``)
-      + the task (``kind="query"``) and score by cosine similarity. Catches MEANING
-      matches the keyword path misses — e.g. a "read a website" task vs a "test web
-      pages" skill (no shared tokens). Real embedding models (esp. nomic-embed) pack all
-      these cosines into a NARROW band (~0.45–0.70), so the raw cosines are MIN-MAX
-      normalized across the candidates — the top match → 1.0, the worst → 0.0 — turning
-      small-but-real gaps into decisive ones. (All-equal / single-candidate → treated as
-      1.0, no spurious spread.)
-    - FINAL score = ``0.85*semantic_norm + 0.15*keyword_norm`` (semantic-DOMINANT) when
-      a semantic score exists for that skill, else the keyword score alone. Keyword is a
-      light tie-breaker — it never overrides a clear semantic winner (the old 0.65/0.35
-      blend let keyword noise like a shared "report" token bury the right skill). True
-      zeros (both signals 0) are dropped (precision over recall); if that empties a large
-      set we fall back to the first max_n (better a few than zero).
     - Top max_n by score descending, tie-broken by skill_slug (stable, deterministic).
-
-    DEGRADE-TO-KEYWORD: if embeddings are unavailable (no provider key, the endpoint
-    fails, the task embed fails) OR the semantic path raises for any reason, the result
-    is EXACTLY the prior keyword-only selection — routing is never broken by embeddings.
-
-    PURE + TOTAL: any read/parse/network error → that skill falls back to its keyword
-    score (or 0), never raises."""
+    PURE + TOTAL: any read/parse error gives that skill a zero score, never raises."""
     skills = skills or []
     if len(skills) <= max_n:
         return skills
@@ -762,81 +723,16 @@ def _select_skills(task_text: str, skills: list[dict[str, Any]], max_n: int) -> 
 
     # --- keyword pass (always; the proven path + the fallback) ---
     kw_scores: dict[int, int] = {id(sk): _keyword_score(sk) for sk in skills}
-    max_kw = max(kw_scores.values(), default=0)
-
-    def _keyword_only_result() -> list[dict[str, Any]]:
-        """The ORIGINAL keyword-only selection — the behavior-preserving fallback."""
-        scored = sorted(skills, key=lambda sk: (-kw_scores[id(sk)], _slug(sk)))
-        nonzero = [sk for sk in scored if kw_scores[id(sk)] > 0]
-        if not nonzero:
-            return scored[:max_n]
-        return nonzero[:max_n]
-
-    # --- semantic pass (best-effort; any failure → keyword-only, behavior-preserving) ---
-    mode = "keyword"
-    try:
-        from . import skill_embed
-
-        vecs = skill_embed.skill_vectors(skills, _skill_route_text)
-        # Embed the TASK as a QUERY (asymmetric nomic prefix); the skills were embedded
-        # as DOCUMENTS inside skill_vectors. Only embed the task if we got skill vectors.
-        tv = skill_embed.embed_texts([task_text], kind="query") if vecs is not None else None
-        if vecs is not None and tv:
-            mode = "semantic"
-            task_vec = tv[0]
-            # Raw cosine per candidate that HAS a vector (skipping skills with no embed).
-            raw_cos: dict[str, float] = {}
-            for sk in skills:
-                v = vecs.get(_slug(sk))
-                if v:
-                    raw_cos[_slug(sk)] = skill_embed.cosine(task_vec, v)
-
-            # MIN-MAX normalize the cosines across candidates so the compressed
-            # real-model band (~0.45–0.70) spreads to 0..1 and small real differences
-            # become decisive. Guard the degenerate cases: a single candidate, or all
-            # cosines equal (span 0) → every semantic_norm is 1.0 (no spurious spread,
-            # so keyword breaks the tie). cosines may be negative; min-max handles that.
-            semantic: dict[str, float] = {}
-            if raw_cos:
-                lo = min(raw_cos.values())
-                hi = max(raw_cos.values())
-                span = hi - lo
-                for slug, c in raw_cos.items():
-                    semantic[slug] = ((c - lo) / span) if span > 0.0 else 1.0
-
-            def _final(sk: dict[str, Any]) -> float:
-                kw_norm = (kw_scores[id(sk)] / max_kw) if max_kw > 0 else 0.0
-                sem = semantic.get(_slug(sk))
-                if sem is None:
-                    return kw_norm  # no embedding for this skill → keyword alone
-                # Semantic-DOMINANT: a clear semantic winner is never buried by keyword
-                # noise; keyword is only a 15% tie-breaker.
-                return 0.85 * sem + 0.15 * kw_norm
-
-            finals = {id(sk): _final(sk) for sk in skills}
-            scored = sorted(skills, key=lambda sk: (-finals[id(sk)], _slug(sk)))
-            # Drop TRUE zeros — a skill with NEITHER a semantic vector NOR keyword overlap.
-            # NB: under min-max the worst-cosine candidate gets semantic_norm==0.0 even
-            # though it has real semantic signal, so we test PRESENCE in `semantic` (it was
-            # embedded + scored), not finals>0 — otherwise the min candidate would be wrongly
-            # dropped. Falls back to the first max_n if this empties a large set.
-            nonzero = [
-                sk for sk in scored
-                if _slug(sk) in semantic or kw_scores[id(sk)] > 0
-            ]
-            result = (nonzero or scored)[:max_n]
-        else:
-            result = _keyword_only_result()
-    except Exception:  # pragma: no cover - defensive: semantic path must never break routing
-        mode = "keyword"
-        result = _keyword_only_result()
+    scored = sorted(skills, key=lambda sk: (-kw_scores[id(sk)], _slug(sk)))
+    nonzero = [sk for sk in scored if kw_scores[id(sk)] > 0]
+    result = (nonzero or scored)[:max_n]
 
     # Env-gated debug: which slugs + which mode (semantic vs keyword fallback). The
     # caller logs the full slug list; this just records the routing MODE for diagnosis.
     if os.environ.get("KAIDERA_SKILL_SELECT_DEBUG"):
         with contextlib.suppress(Exception):
             picked = ",".join(_slug(sk) or str(sk.get("name") or "?") for sk in result)
-            sys.stderr.write(f"[run-agent] _select_skills mode={mode} picked=[{picked}]\n")
+            sys.stderr.write(f"[run-agent] _select_skills mode=keyword picked=[{picked}]\n")
     return result
 
 

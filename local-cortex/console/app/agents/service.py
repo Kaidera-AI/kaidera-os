@@ -15,7 +15,7 @@ LAYER RULE (arrows point inward, ratified design §3): this module depends ONLY 
 store — `load_agent_overrides` / `get_agent_override`). It imports NOTHING outward
 (no fastapi / httpx / subprocess / psycopg2 / asyncpg) and never reaches back into
 `app.main`, the concrete `app.appdb` / `app.adapters`, or the concrete
-`app.harness` / `app.providers`. The presentation pieces it needs — a per-agent
+`app.harness`. The presentation pieces it needs — a per-agent
 config RESOLVER (the card's effective harness/model + their human labels) and a
 config-VIEW shaper (the inline-edit row model) — are INJECTED as plain callables
 (the analytics pattern), so the service stays free of the concrete `harness`
@@ -241,15 +241,11 @@ def _default_config_view(
 
 def _catalog_chat_options(
     catalog_groups: Optional[list],
-    *,
-    namespace_provider: bool = False,
 ) -> list[dict[str, Any]]:
-    """Flatten the Providers catalog `groups` into a FLAT provider-tagged option
-    list — CHAT models only (the API lanes drive chat). Each option is
+    """Flatten a CLI catalog into a provider-tagged option list, chat models only.
+    Each option is
     {value,label,provider} so the SPA can build `<optgroup>`s client-side.
-    `namespace_provider=True` prefixes saved values as `<provider>/<id>` so the
-    Kaidera AI runner knows which configured provider key/base URL to use. An empty/None
-    catalog → []."""
+    An empty/None catalog yields []."""
     out: list[dict[str, Any]] = []
     for g in catalog_groups or []:
         provider = g.get("provider") or ""
@@ -260,8 +256,6 @@ def _catalog_chat_options(
             if not rid:
                 continue
             value = str(rid)
-            if namespace_provider and provider and not value.startswith(f"{provider}/"):
-                value = f"{provider}/{value}"
             option: dict[str, Any] = {
                 "value": value,
                 "label": row.get("display_name") or rid,
@@ -272,53 +266,6 @@ def _catalog_chat_options(
             if "reasoning_levels" in row:
                 option["reasoning_levels"] = list(row.get("reasoning_levels") or [])
             out.append(option)
-    return out
-
-
-_OWN_HARNESS_PI_BRIDGE_PROVIDERS = frozenset({
-    "fireworks",
-    "ollama-cloud",
-    "openrouter",
-})
-
-
-def _kaidera_catalog_groups(
-    catalog_groups: Optional[list],
-    pi_catalog_groups: Optional[list],
-) -> list:
-    """Provider catalog groups for Kaidera AI/kaidera.
-
-    The primary source remains the Providers catalog. PI, however, can also own
-    provider API-key logins host-side via extension auth (notably Ollama Cloud).
-    When PI can see an API-compatible provider and the normal provider catalog has
-    no rows for that provider, bridge that group into the Kaidera AI picker. Skip
-    subscription-only PI providers such as OpenAI-Codex because kaidera cannot
-    call those APIs directly.
-    """
-    # CONFIGURED-ONLY: never offer a model the operator can't actually run. OpenRouter is fetched
-    # WITHOUT a key (its full public list, as the "richest source"), so without this filter its
-    # ~300 models flood the picker and an agent can be saved with one that fails at chat time with
-    # "no <provider> provider key is configured" (a real misconfig: an agent saved on openrouter with no key). Only
-    # keep providers that have a real configured key; PI-bridged providers (added below) count as
-    # configured by virtue of the host-side login.
-    out = [g for g in (catalog_groups or []) if isinstance(g, dict) and g.get("configured")]
-    providers_with_rows = {
-        str(g.get("provider") or "")
-        for g in out
-        if isinstance(g, dict) and (g.get("rows") or [])
-    }
-    for group in pi_catalog_groups or []:
-        if not isinstance(group, dict):
-            continue
-        provider = str(group.get("provider") or "")
-        if provider not in _OWN_HARNESS_PI_BRIDGE_PROVIDERS:
-            continue
-        if provider in providers_with_rows:
-            continue
-        if not (group.get("rows") or []):
-            continue
-        out.append(group)
-        providers_with_rows.add(provider)
     return out
 
 
@@ -339,7 +286,6 @@ def _merge_model_options(primary: Optional[list], fallback: Optional[list]) -> l
 
 def build_config_catalog(
     harness_cfg: Any,
-    catalog_groups: Optional[list],
     pi_catalog_groups: Optional[list] = None,
     claude_model_options: Optional[list] = None,
     codex_model_options: Optional[list] = None,
@@ -349,11 +295,8 @@ def build_config_catalog(
     round-trip — the same map the legacy `_settings_configure.html` builds from
     `harness.harness_js_map`).
 
-    `harness_cfg` is the `app.harness` module (INJECTED, not imported — keeps this
-    module free of the concrete harness per the layer rule, the analytics
-    injection pattern); `catalog_groups` is `app.providers.view_catalog()['groups']`
-    (the kaidera catalog-lane model source) and `pi_catalog_groups` is the
-    host PI `pi --list-models` catalog. Sourced 1:1 from
+    `harness_cfg` is the `app.harness` module (injected, not imported) and
+    `pi_catalog_groups` is the host PI `pi --list-models` catalog.
     Claude/Codex options come from their host CLI discovery bridges; curated
     ``HARNESS_MODELS`` rows are outage fallbacks. The SPA option sets therefore
     match the installed harnesses and the runner rather than a release-time snapshot.
@@ -367,10 +310,8 @@ def build_config_catalog(
           "default_harness": "claude-code",
           "default_model": "<the default claude-code model id>",
         }
-    A fixed lane carries its static per-harness {value,label} model set; kaidera
-    carries provider-prefixed API model values; pi carries its live PI model values
+    A fixed lane carries its static per-harness {value,label} model set; PI carries its live model values
     and falls back to HARNESS_MODELS["pi"] when the host PI catalog is unavailable."""
-    # EDITION/LICENSE gate: PUBLIC offers only kaidera + license-granted harnesses.
     order_fn = getattr(harness_cfg, "visible_harness_order", None)
     order: list[str] = list(order_fn() if callable(order_fn) else harness_cfg.HARNESS_ORDER)
     specs: dict[str, dict] = harness_cfg.HARNESSES
@@ -379,16 +320,8 @@ def build_config_catalog(
     custom_model_options_for = getattr(harness_cfg, "custom_harness_model_options", None)
     reasoning: dict[str, list] = harness_cfg.HARNESS_REASONING
 
-    own_catalog_groups = _kaidera_catalog_groups(catalog_groups, pi_catalog_groups)
-    catalog_options = _catalog_chat_options(own_catalog_groups, namespace_provider=True)
     pi_catalog_options = _catalog_chat_options(pi_catalog_groups)
-
-    # B3: per-model reasoning for the kaidera (catalog) lane — {model_value:
-    # [{value,label}]} built from each catalog model's discovered reasoning_levels
-    # (B2). The SPA's reasoning dropdown reads THIS for the selected kaidera model
-    # instead of the fixed per-harness list, and hides/disables when it's empty
-    # (a non-reasoning model). Other (fixed) lanes keep reasoning_by_harness.
-    reasoning_by_model = _reasoning_by_model(catalog_options, harness="kaidera")
+    reasoning_by_model: dict[str, list] = {}
 
     harnesses: list[dict[str, Any]] = []
     models_by_harness: dict[str, list] = {}
@@ -406,13 +339,11 @@ def build_config_catalog(
                 "lane_label": spec.get("lane_label"),
             }
         )
-        # Dynamic lanes pull their own provider-grouped catalog; fixed lanes carry
+        # Dynamic lanes pull their own CLI catalog; fixed lanes carry
         # their static per-harness {value,label} set. PI keeps a fixed fallback so a
         # down host service does not leave the configured subscription lane unusable.
         fallback = model_options_for(key) if callable(model_options_for) else fixed_models.get(key, [])
-        if model_source == "catalog":
-            models_by_harness[key] = list(catalog_options)
-        elif model_source == "pi-catalog":
+        if model_source == "pi-catalog":
             models_by_harness[key] = list(pi_catalog_options or fallback)
         elif model_source == "claude-catalog":
             models_by_harness[key] = _merge_model_options(claude_model_options, fallback)
@@ -421,7 +352,7 @@ def build_config_catalog(
         else:
             models_by_harness[key] = list(fallback)
         if model_source in {
-            "catalog", "claude-catalog", "codex-catalog", "pi-catalog"
+            "claude-catalog", "codex-catalog", "pi-catalog"
         }:
             reasoning_by_model.update(
                 _reasoning_by_model(models_by_harness[key], harness=key)

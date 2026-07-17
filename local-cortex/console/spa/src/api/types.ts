@@ -785,9 +785,7 @@ export interface AgentOverridePatch {
 // ---------------------------------------------------------------------------
 //  Settings — STEP 3a JSON catalogs (the [API]-gap endpoints the SPA tabs consume)
 //
-//  Transcribed 1:1 from app/settings_module/service.py (`build_system_schema`,
-//  `group_catalog_models`) + api.py (the custom-provider / key-test / workspace
-//  response shapes) + app/settings.py `view_custom_providers` (the masked list).
+//  Transcribed from app/settings_module/service.py and api.py.
 //  These are NOT guessed — each field maps to a key the service emits.
 // ---------------------------------------------------------------------------
 
@@ -835,66 +833,6 @@ export interface SystemSchemaGroup {
 export interface SystemSchema {
   project?: string
   groups: SystemSchemaGroup[]
-  store_connected?: boolean
-}
-
-/** One model row in the Providers catalog (per-provider). */
-export interface CatalogModel {
-  model: string
-  type: string
-  reasoning_tiers: string[]
-  input_price_per_mtok: number | null
-  output_price_per_mtok: number | null
-  context_window: number | null
-  source: string
-  freshness: string
-}
-
-/** A provider's account balance/credits (#133), when the provider exposes one. */
-export interface ProviderBalance {
-  amount: number
-  currency: string
-  display: string
-  detail?: string
-}
-
-/** A provider group in the Providers catalog. */
-export interface ProviderGroup {
-  name: string
-  models: CatalogModel[]
-  /** Present only for providers with a balance endpoint (OpenRouter, DeepSeek, Moonshot). */
-  balance?: ProviderBalance | null
-}
-
-/** GET /settings/{project}/providers — the live model catalog grouped by provider. */
-export interface ProvidersCatalog {
-  project?: string
-  providers: ProviderGroup[]
-}
-
-/**
- * One configured/active provider in the Providers CONTROL surface (GET /settings/
- * {project}/providers/config). Carries the per-provider key-presence + the Test
- * target — NEVER a raw key. `provider_ref` is the canonical Test/write target (a
- * built-in's secret-key field like `anthropic_api_key`, or `custom:<id>`). For a
- * built-in, `key_field` is its secret-key storage key; for a custom provider,
- * `base_url` is its endpoint + `is_custom` is true.
- */
-export interface ProviderConfigRow {
-  name: string
-  label: string
-  key_is_set: boolean
-  is_custom: boolean
-  testable: boolean
-  provider_ref: string
-  key_field?: string
-  base_url?: string
-}
-
-/** GET /settings/{project}/providers/config — the configured providers (key-presence + Test). */
-export interface ProvidersConfig {
-  project?: string
-  providers: ProviderConfigRow[]
   store_connected?: boolean
 }
 
@@ -958,45 +896,6 @@ export interface CortexEmbeddingJobResult {
   project: string
   job: Record<string, unknown>
   error: string | null
-}
-
-/**
- * One operator-added custom provider, MASKED. The raw `api_key` is NEVER present —
- * only `has_key` (whether a key is stored) + `key_display` (the "•••• set" mask).
- * Mirrors `app.settings.view_custom_providers`.
- */
-export interface CustomProvider {
-  id: string
-  name: string
-  base_url: string
-  has_key: boolean
-  key_display: string
-}
-
-/**
- * POST /settings/{project}/custom-providers (+ /delete) → the add/remove result.
- * Always echoes the refreshed MASKED `custom_providers` list (so the SPA re-renders
- * from the authoritative server state). `added` / `removed` report the action.
- */
-export interface CustomProviderResult {
-  project: string
-  ok: boolean
-  added?: string | null
-  removed?: boolean
-  error: string | null
-  custom_providers: CustomProvider[]
-}
-
-/**
- * POST /settings/{project}/provider-key-test → the read-only key-probe result.
- * The key is NEVER echoed — only `ok` + a human `detail` (+ a status/label).
- */
-export interface KeyTestResult {
-  project: string
-  ok: boolean
-  detail: string
-  status: string
-  label: string
 }
 
 /**
@@ -1597,98 +1496,4 @@ export interface SkillBindResult {
   slug: string
   subject: string | null
   error: string | null
-}
-
-/** `GET /settings/{project}/license` — the license posture for the Settings → License
- * panel. `edition` is 'dev' (unrestricted) or 'public' (gated). `limits` caps are null
- * when unlimited (DEV / an :unlimited grant). Never carries the raw token. */
-export interface LicenseStatus {
-  project: string
-  edition: string
-  required: boolean
-  valid: boolean
-  reason: string
-  customer: string | null
-  expires: number | null
-  features: string[]
-  in_grace: boolean
-  hard_gate: {
-    enabled: boolean
-    required: boolean
-    allowed: boolean
-    surface: string
-    state: string
-    reason: string
-    token_present: boolean
-    revoked: boolean
-    in_grace: boolean
-    allowed_surfaces: string[]
-  }
-  all_harnesses: boolean
-  harnesses: string[]
-  advanced: { manifold_access: boolean; [k: string]: boolean }
-  limits: { projects: number | null; teams: number | null; workers: number | null; users: number | null }
-}
-
-export interface LicenseLoginRequest {
-  email: string
-  password: string
-  mfa_code?: string
-}
-
-/** `POST /settings/{project}/license/login|activate|heartbeat|restore|enable|expire` — online platform
- * transport result. `ok=false` means the app kept the current grant/free tier. */
-export interface LicenseTransportResult {
-  project: string
-  action: 'login' | 'activate' | 'heartbeat' | 'restore' | 'enable' | 'expire' | 'releases'
-  ok: boolean
-  status_code: number | null
-  error: string | null
-  stored: boolean
-  grant_valid: boolean
-  install_id: string | null
-  machine_fp: string | null
-  revoked: boolean
-  latest_release: Record<string, unknown> | null
-  customer: string | null
-  org_id?: string | null
-  license_id?: string | null
-  expires_at?: string | null
-  scopes?: string[] | null
-  manifold_enabled?: boolean
-  manifold_key_stored?: boolean
-  manifold_project_id_stored?: boolean
-}
-
-/** Prepaid billing balance from the grant. */
-export interface BillingWallet {
-  balance?: number
-  currency?: string
-  as_of?: number
-}
-
-/** One entitlement row: USAGE (counted from Cortex) vs the entitled TOTAL. `used`/`total`
- * are null when unknown (Cortex down) / unlimited (DEV). `addon` is the SKU that raises it. */
-export interface BillingEntitlementRow {
-  kind: string
-  label: string
-  addon: string
-  used: number | null
-  total: number | null
-}
-
-/** `GET /settings/{project}/billing` — the Billing tab's view: entitlement usage + wallet
- * + active add-ons. Buying add-ons / topping up the wallet lives in the cust-portal. */
-export interface BillingStatus {
-  project: string
-  edition: string
-  valid: boolean
-  in_grace: boolean
-  customer: string | null
-  wallet: BillingWallet | null
-  addons: { sku?: string; qty?: number }[]
-  harnesses: string[]
-  all_harnesses: boolean
-  entitlements: BillingEntitlementRow[]
-  portal_url: string
 }

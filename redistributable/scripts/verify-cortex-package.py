@@ -347,28 +347,35 @@ def check_manifest(root: Path) -> dict[str, Any]:
     return {"files": len(entries)}
 
 
-def check_public_edition(root: Path) -> dict[str, Any]:
-    marker = root / ".kaidera-os-edition"
-    if marker.read_text(encoding="utf-8").strip() != "public":
-        raise VerificationError("redistributable edition marker is not public")
-
+def check_community_identity(root: Path) -> dict[str, Any]:
+    """Verify that the archive has one immutable community identity."""
     module = root / "local-cortex/console/app/edition.py"
     tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
     assignments = [
         node.value
         for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "COMMUNITY"
+    ] + [
+        node.value
+        for node in tree.body
         if isinstance(node, ast.AnnAssign)
         and isinstance(node.target, ast.Name)
-        and node.target.id == "_BAKED_EDITION"
+        and node.target.id == "COMMUNITY"
     ]
     if len(assignments) != 1:
         raise VerificationError(
-            f"expected one _BAKED_EDITION assignment, found {len(assignments)}"
+            f"expected one COMMUNITY assignment, found {len(assignments)}"
         )
     value = assignments[0]
-    if not isinstance(value, ast.Constant) or value.value != "public":
-        raise VerificationError("redistributable edition module is not baked public")
-    return {"marker": "public", "baked_edition": "public"}
+    if not isinstance(value, ast.Constant) or value.value != "community":
+        raise VerificationError("redistributable identity is not community")
+    source = module.read_text(encoding="utf-8")
+    if "KAIDERA_OS_EDITION" in source or "getenv" in source or "environ" in source:
+        raise VerificationError("community identity is runtime-selectable")
+    return {"identity": "community", "runtime_selectable": False}
 
 
 def is_text_file(path: Path) -> bool:
@@ -576,18 +583,14 @@ def check_wizard_no_register(root: Path) -> dict[str, Any]:
             ".agents/config/workspace.json",
             ".agents/config/beat.env",
             "local-cortex/.gitignore",
-            "local-cortex/.env",
-            "local-cortex/KEYS_PENDING.md",
         ]
         missing = [path for path in generated if not (smoke_root / path).exists()]
         if missing:
             raise VerificationError("startup wizard smoke missing generated files: " + ", ".join(missing))
-        env_path = smoke_root / "local-cortex/.env"
-        if env_path.stat().st_mode & 0o077:
-            raise VerificationError("startup wizard generated local-cortex/.env without 0600 permissions")
-        pending_text = (smoke_root / "local-cortex/KEYS_PENDING.md").read_text(encoding="utf-8")
-        if "Provider Options" not in pending_text:
-            raise VerificationError("KEYS_PENDING.md missing provider guidance")
+        if (smoke_root / "local-cortex/.env").exists():
+            raise VerificationError("startup wizard must not generate a provider environment file")
+        if (smoke_root / "local-cortex/KEYS_PENDING.md").exists():
+            raise VerificationError("provider credential guidance must not be generated")
         return {"root": str(smoke_root), "generated": generated, "output": output.splitlines()[:20]}
     finally:
         shutil.rmtree(smoke_root, ignore_errors=True)
@@ -694,7 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         if root is not None:
             run_check(results, "required-files", lambda: check_required_files(root))
             run_check(results, "manifest", lambda: check_manifest(root))
-            run_check(results, "public-edition", lambda: check_public_edition(root))
+            run_check(results, "community-identity", lambda: check_community_identity(root))
             run_check(results, "static-portability", lambda: check_portability(root))
             run_check(results, "postgres-only-runtime", lambda: check_postgres_only_runtime(root))
             run_check(results, "shell-syntax", lambda: check_shell_syntax(root))

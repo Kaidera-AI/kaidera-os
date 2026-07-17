@@ -1,7 +1,7 @@
-"""SDK ports — the five core abstractions the console depends on (PURE).
+"""SDK ports — the three core abstractions the console depends on (PURE).
 
 This is the functional core for the SDK's lego sockets (Track A, ratified design
-§3). It defines `Protocol` interfaces + minimal DTOs for the FIVE ports that sit
+§3). It defines `Protocol` interfaces for the three ports that sit
 alongside the Milestone-1 `RunStatePort` (`app/domain/runstate.py`):
 
   * `LLMPort`             — the harness-agnostic chat/dispatch event stream.
@@ -9,14 +9,11 @@ alongside the Milestone-1 `RunStatePort` (`app/domain/runstate.py`):
                             narrow claim/complete dispatch lifecycle).
   * `OperationalStorePort`— the app-DB operational surface (usage telemetry +
                             analytics + settings + agent-config + project flags).
-  * `ModelCatalogPort`    — the provider/model catalog + pricing.
-  * `BillingPort`         — the usage/cost writer (a thin façade over the
-                            OperationalStore usage path; a metering service later).
 
 It is deliberately PURE: it imports ONLY the standard library — NO httpx /
 fastapi / subprocess / psycopg2 / asyncpg. Arrows point inward: the adapters in
 `app/adapters/` IMPLEMENT these Protocols over the existing concrete code
-(`harness_runner`, `cortex_client`, `appdb`, `providers`, the usage path); every
+(`harness_runner`, `cortex_client`, `appdb`); every
 caller depends on the Protocol, never the concrete. A guard test
 (`tests/test_ports_purity.py`) asserts the import purity, exactly like the
 RunStatePort guard.
@@ -33,20 +30,10 @@ implement them faithfully:
   * `LLMPort.stream`            ← `harness_runner.stream_chat`
   * `CortexMemoryPort.*`        ← `cortex_client.CortexClient` public methods
   * `OperationalStorePort.*`    ← `appdb.AppDB` + `appdb.SettingsDB` public surface
-  * `ModelCatalogPort.*`        ← `providers.get_catalog/view_catalog/resolve_model`
-  * `BillingPort.record_usage`  ← the `record_usage` usage-telemetry write path
-
-The DTOs are plain dataclasses (so they round-trip through `dataclasses.asdict`
-for JSON without pulling in pydantic here). Where the existing concrete code
-returns loosely-typed dicts (analytics rows, raw catalog), the port keeps the
-dict shape to stay a faithful 1:1 wrapper for this additive step; the typed DTOs
-cover the two surfaces a swap most needs to agree on (a catalog model + a usage
-record).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import (
     Any,
     AsyncIterator,
@@ -54,63 +41,6 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
-
-# ---------------------------------------------------------------------------
-#  DTOs (plain dataclasses — serialization-friendly, dependency-free)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class CatalogModel:
-    """One model in the provider/model catalog (a flattened `providers` row).
-
-    Mirrors the UnifiedModel dict `providers._model(...)` builds, trimmed to the
-    fields a caller needs to pick + price a model. `reasoning_levels` is the
-    effort tree (Anthropic) or `["supported"]` (a single reasoning flag) or `[]`.
-    Prices are USD-per-million-tokens (None = unknown, not free)."""
-
-    provider: str
-    id: str
-    display_name: str = ""
-    type: str = "chat"
-    context_window: Optional[int] = None
-    max_output: Optional[int] = None
-    reasoning_levels: list[str] = field(default_factory=list)
-    price_in_per_mtok: Optional[float] = None
-    price_out_per_mtok: Optional[float] = None
-    source: str = "live"
-
-
-@dataclass
-class ModelPrice:
-    """A model's resolved upstream provider + per-Mtok pricing (the shape
-    `providers.resolve_model` returns, as a DTO). `resolved` = a catalog match was
-    found; `priced` = both in+out prices are known."""
-
-    model_id: Optional[str] = None
-    provider: Optional[str] = None
-    provider_label: str = "—"
-    price_in_per_mtok: Optional[float] = None
-    price_out_per_mtok: Optional[float] = None
-    resolved: bool = False
-    priced: bool = False
-
-
-@dataclass
-class UsageRecord:
-    """One run's usage/cost telemetry (a `usage_events` row). The fields are the
-    `appdb.AppDB.record_usage` argument set; all optional except the run's
-    scope is carried by the caller. Timestamps/ids are assigned by the store."""
-
-    project: Optional[str] = None
-    agent: Optional[str] = None
-    harness: Optional[str] = None
-    model: Optional[str] = None
-    provider: Optional[str] = None
-    tokens_in: Optional[int] = None
-    tokens_out: Optional[int] = None
-    cost_est_usd: Optional[float] = None
-
 
 # ---------------------------------------------------------------------------
 #  LLMPort — the harness-agnostic event stream (← harness_runner.stream_chat)
@@ -354,77 +284,8 @@ class OperationalStorePort(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-#  ModelCatalogPort — the provider/model catalog + pricing (← providers)
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class ModelCatalogPort(Protocol):
-    """The provider/model catalog + pricing resolver.
-
-    Lifted from `providers` (`get_catalog` → `view_catalog` for the model lists;
-    `pricing_index` + `resolve_model` for pricing). The local adapter fetches the
-    live provider lists + the OpenRouter supplement; a platform adapter could read
-    a managed catalog — callers (settings model pickers, analytics cost) never
-    change. Never raises (a network failure degrades to the cached/empty
-    catalog)."""
-
-    async def list_models(self) -> list[CatalogModel]:
-        """The flattened catalog as typed `CatalogModel`s across every configured
-        provider (chat + non-chat). [] when no catalog is available."""
-        ...
-
-    async def price_for(self, model_id: Optional[str]) -> ModelPrice:
-        """Resolve a model id (a native id, a dated id, or a claude-code
-        subscription alias) to its upstream provider + per-Mtok pricing. Unknown
-        ids degrade to provider/price None (`resolved=False`)."""
-        ...
-
-
-# ---------------------------------------------------------------------------
-#  BillingPort — the usage/cost writer (stub now → metering service later)
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class BillingPort(Protocol):
-    """Record a run's billable usage (tokens + cost).
-
-    A thin façade over the OperationalStore usage path TODAY (a stub that writes
-    one `usage_events` row); the seam where a real metering/billing service plugs
-    in LATER without touching callers. Keyed by `run_id` so a metering backend can
-    correlate; the run-scope fields (project/agent/harness/model/provider) ride
-    along so the single write path stays 1:1 with `record_usage`. Best-effort:
-    never raises into a run path (a down billing backend returns False)."""
-
-    async def record_usage(
-        self,
-        *,
-        run_id: str,
-        tokens_in: Optional[int],
-        tokens_out: Optional[int],
-        cost: Optional[float],
-        project: Optional[str] = None,
-        agent: Optional[str] = None,
-        harness: Optional[str] = None,
-        model: Optional[str] = None,
-        provider: Optional[str] = None,
-    ) -> bool:
-        """Record one run's usage/cost. True on a successful write, False when the
-        backend is down / the write failed (never raises)."""
-        ...
-
-
 __all__ = [
-    # DTOs
-    "CatalogModel",
-    "ModelPrice",
-    "UsageRecord",
-    # Ports
     "LLMPort",
     "CortexMemoryPort",
     "OperationalStorePort",
-    "ModelCatalogPort",
-    "BillingPort",
 ]

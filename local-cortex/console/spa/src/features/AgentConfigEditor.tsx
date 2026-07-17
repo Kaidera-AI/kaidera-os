@@ -165,7 +165,7 @@ function ModelOptions({ models, current }: { models: ModelOption[]; current: str
         ))}
         {ensureCurrent}
         {models.length === 0 && !current && (
-          <option value="">— configure a provider key in Settings —</option>
+          <option value="">— no models advertised by this harness —</option>
         )}
       </>
     )

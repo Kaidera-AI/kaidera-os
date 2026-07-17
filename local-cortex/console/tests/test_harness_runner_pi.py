@@ -67,7 +67,7 @@ def test_pi_effort_is_validated_against_selected_model_catalog(monkeypatch):
     ]
 
 
-def test_pi_child_env_preserves_provider_keys_for_provider_prefixed_models(monkeypatch):
+def test_pi_child_env_strips_provider_keys_for_every_model(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "metered-openai")
     monkeypatch.setenv("FIREWORKS_API_KEY", "fireworks-key")
 
@@ -75,8 +75,8 @@ def test_pi_child_env_preserves_provider_keys_for_provider_prefixed_models(monke
     provider_env = hr._pi_child_env("fireworks/accounts/fireworks/models/kimi-k2p6")
 
     assert "OPENAI_API_KEY" not in codex_env
-    assert provider_env["FIREWORKS_API_KEY"] == "fireworks-key"
-    assert provider_env["OPENAI_API_KEY"] == "metered-openai"
+    assert "FIREWORKS_API_KEY" not in provider_env
+    assert "OPENAI_API_KEY" not in provider_env
 
 
 def test_pi_idle_after_text_default_is_short_tail():

@@ -5,12 +5,10 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import getpass
 import importlib.util
 import json
 import os
 import re
-import shlex
 import sys
 import urllib.error
 import urllib.parse
@@ -25,84 +23,6 @@ VALIDATOR_PATH = SCRIPT_DIR / "validate-cortex-project-config.py"
 DEFAULT_API_URL = "http://localhost:8501"
 DEFAULT_ADMIN_TOKEN = ""
 COLOR_CYCLE = ["green", "red", "blue", "yellow", "magenta", "cyan", "white"]
-
-MODEL_TYPE_HELP = {
-    "llm": "Chat/reasoning model for agent work.",
-    "embedding": "Embedding model for semantic search over Cortex memory.",
-    "reranking": "Reranking model for post-retrieval ordering.",
-    "vision": "Optional vision model for image or screenshot understanding.",
-    "code": "Optional code-specialized model.",
-}
-
-PROVIDER_CATALOG = {
-    "openai": {
-        "label": "OpenAI",
-        "key_env": "OPENAI_API_KEY",
-        "base_url_env": "OPENAI_BASE_URL",
-        "default_base_url": "https://api.openai.com/v1",
-        "validation_path": "/models",
-        "auth": "bearer",
-        "models": {
-            "llm": "gpt-5.5",
-            "embedding": "text-embedding-3-large",
-            "reranking": "provider-reranker-or-local-bge-reranker-large",
-        },
-    },
-    "anthropic": {
-        "label": "Anthropic",
-        "key_env": "ANTHROPIC_API_KEY",
-        "base_url_env": "ANTHROPIC_BASE_URL",
-        "default_base_url": "https://api.anthropic.com",
-        "validation_path": "/v1/models",
-        "auth": "anthropic",
-        "models": {"llm": "claude-opus-4-6", "embedding": "local-all-mpnet-base-v2", "reranking": "local-bge-reranker-large"},
-    },
-    "openrouter": {
-        "label": "OpenRouter",
-        "key_env": "OPENROUTER_API_KEY",
-        "base_url_env": "OPENROUTER_BASE_URL",
-        "default_base_url": "https://openrouter.ai/api/v1",
-        "validation_path": "/models",
-        "auth": "bearer",
-        "models": {"llm": "anthropic/claude-sonnet-4.5", "embedding": "local-all-mpnet-base-v2", "reranking": "local-bge-reranker-large"},
-    },
-    "together": {
-        "label": "Together",
-        "key_env": "TOGETHER_API_KEY",
-        "base_url_env": "TOGETHER_BASE_URL",
-        "default_base_url": "https://api.together.xyz/v1",
-        "validation_path": "/models",
-        "auth": "bearer",
-        "models": {"llm": "meta-llama/Llama-3.1-70B-Instruct-Turbo", "embedding": "togethercomputer/m2-bert-80M-8k-retrieval", "reranking": "local-bge-reranker-large"},
-    },
-    "groq": {
-        "label": "Groq",
-        "key_env": "GROQ_API_KEY",
-        "base_url_env": "GROQ_BASE_URL",
-        "default_base_url": "https://api.groq.com/openai/v1",
-        "validation_path": "/models",
-        "auth": "bearer",
-        "models": {"llm": "llama-3.3-70b-versatile", "embedding": "local-all-mpnet-base-v2", "reranking": "local-bge-reranker-large"},
-    },
-    "ollama": {
-        "label": "Ollama/local",
-        "key_env": "",
-        "base_url_env": "OLLAMA_BASE_URL",
-        "default_base_url": "http://localhost:11434",
-        "validation_path": "/api/tags",
-        "auth": "none",
-        "models": {"llm": "llama3.1", "embedding": "nomic-embed-text", "reranking": "local-bge-reranker-large"},
-    },
-    "openai-compatible": {
-        "label": "Bring-your-own OpenAI-compatible endpoint",
-        "key_env": "OPENAI_COMPATIBLE_API_KEY",
-        "base_url_env": "OPENAI_COMPATIBLE_BASE_URL",
-        "default_base_url": "http://localhost:8000/v1",
-        "validation_path": "/models",
-        "auth": "bearer",
-        "models": {"llm": "configured-chat-model", "embedding": "configured-embedding-model", "reranking": "configured-reranking-model"},
-    },
-}
 
 STANDARD_ROLE_LABELS = {
     "lead": "Lead",
@@ -349,165 +269,6 @@ def beat_env(config: dict[str, Any], root: Path) -> str:
     )
 
 
-def provider_label(name: str) -> str:
-    return str(PROVIDER_CATALOG.get(name, {}).get("label") or name)
-
-
-def normalize_provider_names(raw: list[str] | None) -> list[str]:
-    names: list[str] = []
-    for value in raw or []:
-        for item in value.split(","):
-            name = slugify(item.strip(), fallback="")
-            if not name:
-                continue
-            if name not in PROVIDER_CATALOG:
-                raise WizardError(f"Unsupported provider {item!r}; choose one of: {', '.join(PROVIDER_CATALOG)}")
-            if name not in names:
-                names.append(name)
-    return names
-
-
-def env_assign(name: str, value: str) -> str:
-    if "\n" in value or "\r" in value:
-        raise WizardError(f"Environment value for {name} cannot contain newlines")
-    return f"{name}={shlex.quote(value)}" if value else f"{name}="
-
-
-def join_url(base_url: str, path: str) -> str:
-    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-
-
-def validate_provider_key(provider: str, key_value: str, base_url: str, timeout: float) -> tuple[str, str]:
-    meta = PROVIDER_CATALOG[provider]
-    if meta.get("key_env") and not key_value:
-        return "pending", "missing key"
-    headers = {"Accept": "application/json"}
-    auth = meta.get("auth")
-    if auth == "bearer":
-        headers["Authorization"] = f"Bearer {key_value}"
-    elif auth == "anthropic":
-        headers["x-api-key"] = key_value
-        headers["anthropic-version"] = "2023-06-01"
-    request = urllib.request.Request(join_url(base_url, str(meta["validation_path"])), headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read(2048)
-    except urllib.error.HTTPError as exc:
-        return "failed", f"HTTP {exc.code}"
-    except urllib.error.URLError as exc:
-        return "failed", str(exc.reason)
-    except TimeoutError:
-        return "failed", "timeout"
-    return "validated", "one-call check succeeded"
-
-
-def provider_model_defaults(provider: str) -> dict[str, str]:
-    meta = PROVIDER_CATALOG[provider]
-    return {str(key): str(value) for key, value in dict(meta.get("models") or {}).items()}
-
-
-def build_provider_key_plan(
-    config: dict[str, Any],
-    *,
-    mode: str,
-    providers: list[str],
-    validate_keys: bool,
-    timeout: float,
-) -> dict[str, Any]:
-    selected = normalize_provider_names(providers)
-    if mode == "prompt" and not selected:
-        options = ", ".join(f"{name} ({provider_label(name)})" for name in PROVIDER_CATALOG)
-        selected = normalize_provider_names([prompt(f"Providers to configure, comma separated. Options: {options}", "openai")])
-    if mode == "env" and not selected:
-        inferred = [
-            name
-            for name, meta in PROVIDER_CATALOG.items()
-            if meta.get("key_env") and os.environ.get(str(meta["key_env"]))
-        ]
-        if os.environ.get("OLLAMA_BASE_URL"):
-            inferred.append("ollama")
-        selected = normalize_provider_names(inferred)
-
-    selections: list[dict[str, Any]] = []
-    for name in selected:
-        meta = PROVIDER_CATALOG[name]
-        key_env = str(meta.get("key_env") or "")
-        base_url_env = str(meta.get("base_url_env") or "")
-        base_url = os.environ.get(base_url_env) or str(meta.get("default_base_url") or "")
-        key_value = ""
-        if key_env:
-            if mode == "prompt":
-                key_value = getpass.getpass(f"{provider_label(name)} key ({key_env}); leave blank to defer: ").strip()
-            elif mode == "env":
-                key_value = os.environ.get(key_env, "")
-        status = "pending" if key_env and not key_value else "not_validated"
-        detail = "fill later" if status == "pending" else "validation not requested"
-        if validate_keys and status != "pending":
-            status, detail = validate_provider_key(name, key_value, base_url, timeout)
-        selections.append(
-            {
-                "provider": name,
-                "label": provider_label(name),
-                "key_env": key_env,
-                "key_value": key_value,
-                "base_url_env": base_url_env,
-                "base_url": base_url,
-                "models": provider_model_defaults(name),
-                "validation_status": status,
-                "validation_detail": detail,
-            }
-        )
-
-    return {
-        "mode": mode,
-        "selected": selections,
-        "model_requirements": config.get("model_requirements", []),
-    }
-
-
-def provider_env_content(plan: dict[str, Any]) -> str:
-    selected = list(plan.get("selected") or [])
-    lines = [
-        "# Generated by cortex-startup-wizard. This file is gitignored.",
-        "# Do not commit provider keys.",
-        "",
-    ]
-    if selected:
-        primary = selected[0]
-        lines.append(env_assign("CORTEX_MODEL_PROVIDER", str(primary["provider"])))
-        for selection in selected:
-            lines.append("")
-            lines.append(f"# {selection['label']}")
-            key_env = str(selection.get("key_env") or "")
-            if key_env:
-                lines.append(env_assign(key_env, str(selection.get("key_value") or "")))
-            base_url_env = str(selection.get("base_url_env") or "")
-            if base_url_env:
-                lines.append(env_assign(base_url_env, str(selection.get("base_url") or "")))
-            for model_type, model_name in dict(selection.get("models") or {}).items():
-                env_name = f"CORTEX_{str(model_type).upper()}_MODEL"
-                lines.append(env_assign(env_name, str(model_name)))
-    else:
-        lines.extend(
-            [
-                "# No provider selected yet. Choose one provider block from KEYS_PENDING.md,",
-                "# fill the relevant values, then rerun validation.",
-                "CORTEX_MODEL_PROVIDER=",
-                "",
-            ]
-        )
-        for name, meta in PROVIDER_CATALOG.items():
-            lines.append(f"# {provider_label(name)}")
-            key_env = str(meta.get("key_env") or "")
-            base_url_env = str(meta.get("base_url_env") or "")
-            if key_env:
-                lines.append(f"# {key_env}=")
-            if base_url_env:
-                lines.append(f"# {base_url_env}={meta.get('default_base_url')}")
-            lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def local_cortex_gitignore() -> str:
     return (
         "# Local environment and key material\n"
@@ -520,62 +281,13 @@ def local_cortex_gitignore() -> str:
     )
 
 
-def keys_pending(config: dict[str, Any], key_plan: dict[str, Any] | None = None) -> str:
-    requirements = config.get("model_requirements", [])
-    key_plan = key_plan or {"selected": [], "mode": "skip"}
-    lines = [
-        "# KEYS_PENDING",
-        "",
-        "Provider keys are stored only in `local-cortex/.env`, which is gitignored.",
-        "",
-        "If setup was skipped, fill `local-cortex/.env` later and rerun the one-call provider validation.",
-        "",
-        "## Model Requirements",
-        "",
-    ]
-    for item in requirements:
-        required = "required" if item.get("required") else "optional"
-        model_type = str(item.get("type"))
-        help_text = MODEL_TYPE_HELP.get(model_type, "")
-        suffix = f" ({help_text})" if help_text else ""
-        lines.append(f"- {model_type}: {required} - {item.get('purpose')}{suffix}")
-    lines.append("")
-    lines.append("## Provider Options")
-    lines.append("")
-    for name, meta in PROVIDER_CATALOG.items():
-        key_env = meta.get("key_env") or "no API key required"
-        base_url_env = meta.get("base_url_env") or "n/a"
-        lines.append(f"- {provider_label(name)} (`{name}`): key `{key_env}`, base URL `{base_url_env}`")
-    lines.append("")
-    lines.append("## Selected Providers")
-    lines.append("")
-    selected = list(key_plan.get("selected") or [])
-    if not selected:
-        lines.append("- none selected yet; edit `local-cortex/.env` or rerun the wizard with `--keys-mode env --provider <name>`")
-    for selection in selected:
-        key_state = "not required"
-        if selection.get("key_env"):
-            key_state = "supplied" if selection.get("key_value") else "pending"
-        lines.append(
-            f"- {selection['label']} (`{selection['provider']}`): key {key_state}; "
-            f"validation `{selection['validation_status']}` ({selection['validation_detail']})"
-        )
-        for model_type, model_name in dict(selection.get("models") or {}).items():
-            lines.append(f"  - {model_type}: `{model_name}`")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def build_planned_files(config: dict[str, Any], root: Path, key_plan: dict[str, Any] | None = None) -> list[PlannedFile]:
-    files = [
+def build_planned_files(config: dict[str, Any], root: Path) -> list[PlannedFile]:
+    return [
         PlannedFile(root / ".agents/config/runtime.yaml", runtime_yaml(config, root)),
         PlannedFile(root / ".agents/config/workspace.json", workspace_json(config, root)),
         PlannedFile(root / ".agents/config/beat.env", beat_env(config, root)),
         PlannedFile(root / "local-cortex/.gitignore", local_cortex_gitignore()),
-        PlannedFile(root / "local-cortex/.env", provider_env_content(key_plan or {}), mode=0o600, sensitive=True),
-        PlannedFile(root / "local-cortex/KEYS_PENDING.md", keys_pending(config, key_plan)),
     ]
-    return files
 
 
 def agent_capabilities(agent: dict[str, Any]) -> dict[str, Any]:
@@ -913,11 +625,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--no-verify-boot", dest="verify_boot", action="store_false", help="Skip boot/bootstrap verification.")
     parser.add_argument("--api-url", default=os.environ.get("CORTEX_API_URL", DEFAULT_API_URL), help="Cortex API URL.")
     parser.add_argument("--admin-token", default=os.environ.get("CORTEX_ADMIN_TOKEN", DEFAULT_ADMIN_TOKEN), help="Cortex admin token for project registration.")
-    parser.add_argument("--keys-mode", choices=["skip", "env", "prompt"], default="skip", help="Provider key setup mode. Default skip writes placeholders and KEYS_PENDING.md.")
-    parser.add_argument("--provider", action="append", default=[], help="Provider to configure. Repeat or comma-separate values. Options: openai, anthropic, openrouter, together, groq, ollama, openai-compatible.")
-    parser.add_argument("--validate-keys", dest="validate_keys", action="store_true", default=None, help="Run one-call validation for supplied provider keys.")
-    parser.add_argument("--no-validate-keys", dest="validate_keys", action="store_false", help="Skip provider key validation.")
-    parser.add_argument("--keys-timeout", type=float, default=10.0, help="Provider validation timeout in seconds.")
     return parser.parse_args(argv)
 
 
@@ -945,15 +652,7 @@ def run(argv: list[str] | None = None) -> int:
     if args.apply and not root.exists():
         raise WizardError(f"Target project root does not exist: {root}")
 
-    validate_keys = bool(args.validate_keys) if args.validate_keys is not None else args.keys_mode in {"env", "prompt"}
-    key_plan = build_provider_key_plan(
-        config,
-        mode=args.keys_mode,
-        providers=list(args.provider or []),
-        validate_keys=validate_keys,
-        timeout=float(args.keys_timeout),
-    )
-    planned = build_planned_files(config, root, key_plan)
+    planned = build_planned_files(config, root)
     print_plan(planned, root)
     dry_run = args.dry_run or not args.apply
     if args.diff or dry_run:

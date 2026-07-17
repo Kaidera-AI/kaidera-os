@@ -78,7 +78,7 @@
       hx-include="closest .ad-cfg-sub"
     >
       {% if ad_cfg.model_is_catalog %}
-        {# kaidera/pi → grouped provider catalog #}
+        {# Dynamic CLI catalog grouped by source label. #}
         {% for g in ad_cfg.model_groups %}
         <optgroup label="{{ g.label }}">
           {% for m in g.models %}
@@ -87,7 +87,7 @@
         </optgroup>
         {% endfor %}
       {% else %}
-        {# subscription lane → fixed per-harness set #}
+        {# Flat per-harness model set. #}
         {% for m in ad_cfg.model_options %}
         <option value="{{ m.value }}" {{ 'selected' if ad_cfg.model == m.value else '' }}>{{ m.label }}</option>
         {% endfor %}

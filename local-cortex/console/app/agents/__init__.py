@@ -15,7 +15,7 @@ A clean VERTICAL slice, layered like the rest of the SDK (arrows point inward):
     injectable presentation callables (a config resolver + a config-view shaper);
     it imports NOTHING outward (no fastapi / httpx / subprocess / psycopg2 /
     asyncpg) and never reaches back into `app.main`, the concrete `app.appdb` /
-    `app.adapters`, or the concrete `app.harness` / `app.providers`. The roster is
+    `app.adapters` or the concrete `app.harness`. The roster is
     passed IN by the caller (the analytics `agents=` pattern). The classification +
     shaping logic lifted 1:1 from `main._agent_view` / `_group_agents` /
     `_classify_interactive` / `_has_cpo_tag` / `_registry_interactive` /

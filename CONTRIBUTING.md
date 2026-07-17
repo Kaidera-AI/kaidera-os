@@ -29,10 +29,10 @@ reproduction or acceptance check.
 - **Cortex** is the permanent name of the memory and coordination component.
 - Customer projects, generated workers, credentials, runtime databases, chat
   histories, and private paths do not belong in source.
-- The public edition and the separately operated Kaidera AI enterprise service
-  have distinct deployment and licensing boundaries.
-- Source checkouts remain unbaked for provider integration testing. Public release
-  packaging owns the tested edition-bake step and generated edition marker.
+- Community source contains no commercial licensing, native package source, or
+  built-in model-provider integration. Preserve this structural boundary.
+- External Claude Code, Codex, and PI integrations must keep model and effort
+  discovery dynamic and must not ingest provider credentials into Kaidera OS.
 - Distribution-channel changes belong in
   [`Kaidera-AI/homebrew-kaidera`](https://github.com/Kaidera-AI/homebrew-kaidera).
 
@@ -77,6 +77,7 @@ For a narrow change, run the relevant subset plus these baseline checks:
 ```sh
 git diff --check
 bash scripts/fitness/check-oss-package-hygiene.sh
+bash scripts/fitness/check-community-source-boundary.sh
 python3 redistributable/scripts/validate-cortex-project-config.py \
   redistributable/examples/blank.project.json
 ```

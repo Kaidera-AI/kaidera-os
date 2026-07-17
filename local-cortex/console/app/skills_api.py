@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Body, Depends, Request
 
 from . import auth as auth_module
-from .kaidera_agent import _ssrf_blocked
+from .network_security import ssrf_block_reason
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -56,7 +56,7 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 # internal host, file:// → local disk, http://169.254.169.254 → cloud-metadata). We
 # allow only these well-known code-forge hosts over https:// (plus any *.github.com,
 # e.g. an enterprise subdomain), and additionally DNS-resolve the host through the same
-# `_ssrf_blocked` guard the kaidera web_fetch uses. A bare local filesystem path is
+# shared network guard. A bare local filesystem path is
 # allowed for the dev/test workflow only when it actually exists.
 _INSTALL_HOST_ALLOWLIST = frozenset({"github.com", "gitlab.com", "bitbucket.org"})
 
@@ -166,7 +166,7 @@ def _validate_install_url(url: str) -> str | None:
       * an https:// URL whose host (lowercased, trailing-dot-stripped) is in the
         forge allowlist OR ends with `.github.com` — AND whose host does not DNS-resolve
         to a private / loopback / link-local / reserved / metadata address
-        (`_ssrf_blocked`, the same guard web_fetch uses);
+        (`ssrf_block_reason`);
       * a local filesystem path that EXISTS (the dev/test workflow);
       * everything else is rejected (http://, git@…, ssh://, file://, a non-allowlisted
         host) with a clear reason."""
@@ -186,7 +186,7 @@ def _validate_install_url(url: str) -> str | None:
                 f"'{host}' is not an allowed skill source. Install from "
                 "github.com, gitlab.com, or bitbucket.org."
             )
-        reason = _ssrf_blocked(raw)
+        reason = ssrf_block_reason(raw)
         if reason:
             return f"Refused — that URL resolves to {reason}."
         return None

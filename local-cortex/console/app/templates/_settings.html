@@ -1,8 +1,7 @@
 {#
   SETTINGS center view (R4a). A full center pane (like the agent-detail view):
-  a header + a left sub-nav of 4 tabs (Configure · Providers & Models · Cortex ·
-  System) and a scrollable content body. Defaults to System (the only functional
-  tab in R4a); the other three render a clean labeled "coming next" placeholder.
+  a header + a left sub-nav of four live tabs (Configure, Workspace, Cortex,
+  System) and a scrollable content body. Defaults to System.
 
   Sub-nav switching is a client-side HTMX swap of just the content body
   (#settings-body) via GET /settings/{page}?project=…, so the header + sub-nav

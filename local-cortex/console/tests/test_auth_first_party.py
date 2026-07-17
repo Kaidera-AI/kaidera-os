@@ -382,36 +382,6 @@ async def test_admin_create_then_toggle_role():
 
 
 @pytest.mark.asyncio
-async def test_public_free_tier_blocks_second_user(monkeypatch):
-    monkeypatch.setenv("KAIDERA_OS_EDITION", "public")
-    monkeypatch.delenv("KAIDERA_OS_LICENSE_KEY", raising=False)
-    store = MemoryAuthStore()
-    await _seed(store, "admin@example.com", role="admin")
-
-    with pytest.raises(auth.HTTPException) as exc:
-        await auth.create_user(
-            {"email": "new@example.com", "role": "user"}, admin=admin_user(), store=store
-        )
-
-    assert exc.value.status_code == 403
-    assert exc.value.detail == "license_user_limit_reached"
-
-
-@pytest.mark.asyncio
-async def test_signed_user_cap_allows_second_user(monkeypatch, ed25519_public_license):
-    monkeypatch.setenv("KAIDERA_OS_EDITION", "public")
-    ed25519_public_license("Acme", days=365, features=["kaidera_os_max_users:2"])
-    store = MemoryAuthStore()
-    await _seed(store, "admin@example.com", role="admin")
-
-    created = await auth.create_user(
-        {"email": "new@example.com", "role": "user"}, admin=admin_user(), store=store
-    )
-
-    assert created["user"]["email"] == "new@example.com"
-
-
-@pytest.mark.asyncio
 async def test_admin_block_then_unblock_user():
     store = MemoryAuthStore()
     await _seed(store, "admin@example.com", role="admin")

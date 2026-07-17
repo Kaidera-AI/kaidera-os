@@ -129,10 +129,6 @@ import shlex
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
-
-from . import platform_config
-
 # The real program + headless/streaming flags. The model is appended per-call.
 # Kept as a constant so the one place the real subscription is fired is obvious.
 CLAUDE_PROGRAM = "claude"
@@ -306,16 +302,10 @@ PI_IDLE_AFTER_TEXT_TIMEOUT_S = float(
 # the whole run. Raise the ceiling to 16MB so large JSON frames fit in one line.
 STREAM_BUFFER_LIMIT = 16 * 1024 * 1024
 
-# Metered-API keys we MUST strip from the child env so the CLI uses the
-# logged-in SUBSCRIPTION (Keychain OAuth) and never silently bills the API.
-# (Research §"Cross-cutting backend rules" #1 — claude reads ANTHROPIC_API_KEY;
-# the rest are stripped defensively so this stays correct if we add codex etc.)
-_METERED_ENV_KEYS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "OPENAI_API_KEY",
-    "CODEX_API_KEY",
-)
+# Credential-shaped environment variables never cross into a community harness
+# child. The external CLIs authenticate through their own login stores.
+_SECRET_ENV_SUFFIXES = ("_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN")
+_SECRET_ENV_NAMES = frozenset({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"})
 
 # Module-level command override (set by tests). None → use the real claude argv.
 _CMD_OVERRIDE: list[str] | None = None
@@ -431,26 +421,13 @@ def _build_command(prompt: str, model: str, reasoning: str | None = None) -> lis
 
 
 def _child_env() -> dict[str, str]:
-    """The child environment: inherit the parent env but STRIP the metered-API
-    keys so the CLI authenticates via the logged-in subscription (Keychain
-    OAuth), never the metered API. Returns a copy (parent env untouched)."""
-    env = dict(os.environ)
-    for key in _METERED_ENV_KEYS:
-        env.pop(key, None)
-    return env
-
-
-def _pi_model_provider(model: str | None) -> str:
-    """Provider PI will use for this model value.
-
-    Bare values are OpenAI-Codex subscription models. Provider-prefixed values use
-    their first path component, matching PI's documented `provider/id` model syntax.
-    """
-    m = (model or "").strip()
-    if "/" in m:
-        provider = m.split("/", 1)[0].strip()
-        return provider or PI_PROVIDER
-    return PI_PROVIDER
+    """Return a child environment without app-supplied API credentials."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _SECRET_ENV_NAMES
+        and not key.endswith(_SECRET_ENV_SUFFIXES)
+    }
 
 
 def _pi_program() -> str:
@@ -464,16 +441,9 @@ def _pi_program() -> str:
 
 
 def _pi_child_env(model: str | None = None) -> dict[str, str]:
-    """The pi child env plus two pi-specific knobs.
-
-    pi authenticates via the openai-codex OAuth in ``~/.pi/agent/auth.json``
-    for bare OpenAI-Codex model ids, so those turns still strip metered provider
-    keys. Provider-prefixed PI model ids (for example ``fireworks/...``) need the
-    host's provider keys, so those turns preserve the service environment.
-    ``PI_SKIP_VERSION_CHECK=1`` and ``PI_TELEMETRY=0`` quiet pi's startup version
-    check / telemetry side-effects. We never read or log ``auth.json`` / tokens."""
-    provider = _pi_model_provider(model)
-    env = _child_env() if provider == PI_PROVIDER else dict(os.environ)
+    """Return PI's credential-free child environment plus quiet-start knobs."""
+    del model
+    env = _child_env()
     env["PI_SKIP_VERSION_CHECK"] = "1"
     env["PI_TELEMETRY"] = "0"
     return env
@@ -924,9 +894,6 @@ async def stream_chat(
       * ``pi``          → the real pi non-interactive spawn (``_stream_pi``,
                           ``pi --mode json``); if the
                           ``pi`` binary is absent, degrades gracefully.
-      * ``kaidera`` / ``kaidera`` → configured provider API lane.
-      * ``kaidera-no-tools`` / ``kaidera-singleshot`` / ``no-tools`` →
-                          configured provider API lane without shell/file tools.
       * anything else   → graceful status message (unknown harness).
 
     Every lane yields the same event dicts (session / delta / result / error /
@@ -969,14 +936,6 @@ async def stream_chat(
             prompt, model, system, thinking=reasoning, workspace=workspace,
             project_key=project_key, run_context=run_context
         ):
-            yield ev
-        return
-    if key == "kaidera":  # fitness:allow-literal canonical harness id routes the own-harness lane, not a per-project literal
-        async for ev in _stream_kaidera(prompt, model, system, thinking=reasoning, workspace=workspace, project_key=project_key):
-            yield ev
-        return
-    if key in ("kaidera-no-tools", "kaidera-singleshot", "no-tools"):  # fitness:allow-literal harness lane aliases, not project names
-        async for ev in _stream_kaidera_singleshot(prompt, model, system, reasoning, workspace=workspace):
             yield ev
         return
     # Unknown value — graceful fallback.
@@ -2020,9 +1979,8 @@ async def _stream_pi(
     per-turn timeout kills + surfaces a timeout error, malformed JSONL lines are
     skipped, and a non-zero exit with no parsed reply surfaces a clear error.
     stdin is closed (DEVNULL) so pi never blocks reading piped input. The child
-    env (``_pi_child_env``) strips metered API keys for bare OpenAI-Codex models
-    and preserves provider keys for provider-prefixed models — we never read or log
-    auth.json/tokens or the raw stderr beyond a short tail in a nonzero-exit error."""
+    env (``_pi_child_env``) never forwards app-supplied API credentials; PI uses
+    its own login store. Raw stderr is limited to a short tail on nonzero exit."""
     argv = _build_pi_command(_compose_prompt(prompt, system), model, thinking=thinking)
 
     try:
@@ -2177,622 +2135,6 @@ async def _stream_pi(
 
 
 # ---------------------------------------------------------------------------
-#  kaidera / kaidera lane — provider API keys configured in Settings
-# ---------------------------------------------------------------------------
-
-OWN_HARNESS_DEFAULT_MODEL = os.environ.get(
-    "HARNESS_OWN_DEFAULT_MODEL", "kaidera-manifold/ollama-cloud/minimax-m3"
-)
-OWN_HARNESS_TIMEOUT_S = float(os.environ.get("HARNESS_OWN_TIMEOUT_S", "120"))
-OWN_HARNESS_MAX_TOKENS = int(os.environ.get("HARNESS_OWN_MAX_TOKENS", "4096"))
-
-# Kaidera AI Manifold endpoint — the platform's hosted OpenAI-compatible inference gateway.
-# Env/config-overridable per deployment; the license customer surface mints the bearer
-# key and server-side metering/wallet settlement stays on the platform.
-MANIFOLD_BASE_URL = platform_config.manifold_base_url()
-
-_OWN_OPENAI_COMPAT_CHAT: dict[str, tuple[str, str]] = {
-    "kaidera-manifold": ("kaidera_manifold_api_key", ""),
-    "openai": ("openai_api_key", "https://api.openai.com/v1/chat/completions"),
-    "openrouter": ("openrouter_api_key", "https://openrouter.ai/api/v1/chat/completions"),
-    "fireworks": ("fireworks_api_key", "https://api.fireworks.ai/inference/v1/chat/completions"),
-    "groq": ("groq_api_key", "https://api.groq.com/openai/v1/chat/completions"),
-    "siliconflow": ("siliconflow_api_key", "https://api.siliconflow.com/v1/chat/completions"),
-    "deepseek": ("deepseek_api_key", "https://api.deepseek.com/v1/chat/completions"),
-    "together": ("together_api_key", "https://api.together.xyz/v1/chat/completions"),
-    "moonshot": ("moonshot_api_key", "https://api.moonshot.ai/v1/chat/completions"),
-    "xai": ("xai_api_key", "https://api.x.ai/v1/chat/completions"),
-    "ollama-cloud": ("ollama_cloud_api_key", "https://ollama.com/v1/chat/completions"),
-    "dashscope": ("dashscope_api_key", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
-    "inception": ("inception_api_key", "https://api.inceptionlabs.ai/v1/chat/completions"),
-    "alibaba-cloud": ("alibaba_cloud_api_key", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"),
-}
-
-
-class _OwnHarnessError(Exception):
-    def __init__(self, category: str, message: str) -> None:
-        super().__init__(message)
-        self.category = category
-        self.message = message
-
-
-def _chat_url_from_base(base_url: str) -> str:
-    base = (base_url or "").strip().rstrip("/")
-    if not base:
-        return ""
-    if base.endswith("/chat/completions"):
-        return base
-    return f"{base}/chat/completions"
-
-
-def _manifold_base_url(cfg: dict[str, Any]) -> str:
-    return platform_config.manifold_base_url(
-        str(cfg.get("kaidera_manifold_base_url") or "")
-    )
-
-
-def _manifold_project_id(cfg: dict[str, Any]) -> str:
-    """The `X-Project-Id` value — the platform project that scopes + bills the call.
-    Manifold's /v1 edge returns 400 missing_project_id without it, so it is required."""
-    return str(
-        cfg.get("kaidera_manifold_project_id")
-        or os.environ.get("KAIDERA_MANIFOLD_PROJECT_ID")
-        or ""
-    ).strip()
-
-
-def _own_runtime_config() -> tuple[dict[str, Any], dict[str, dict[str, str]], Any]:
-    """Load provider keys/custom providers through the existing Settings store."""
-    from app import providers as providers_catalog
-    from app import settings as settings_store
-
-    # load_with_secrets(), NOT load(): provider keys live outside the System schema,
-    # so a bare load() drops every provider API key and the kaidera call would
-    # authenticate with an empty key. _resolve_provider_key reads cfg.get(setting_key).
-    cfg = settings_store.load_with_secrets()
-    customs = {
-        f"custom:{c['id']}": c
-        for c in settings_store.load_custom_providers()
-        if c.get("id")
-    }
-    return cfg, customs, providers_catalog._resolve_provider_key
-
-
-def _own_provider_key(provider: str, cfg: dict[str, Any], customs: dict[str, dict[str, str]], resolver: Any) -> str:
-    if provider.startswith("custom:"):
-        return (customs.get(provider, {}).get("api_key") or "").strip()
-    if provider == "kaidera-manifold":
-        try:
-            from app import edition
-            from app import license as lic_mod
-            if not edition.is_dev() and not lic_mod.entitlements().has_advanced("manifold_access"):
-                return ""
-        except Exception:
-            return ""
-    if provider == "codex-subscription":
-        # PRESENCE sentinel only — the real OAuth bearer is fetched ASYNC in
-        # _kaidera_complete (refresh is an async HTTP call; this resolver is sync).
-        from . import codex_oauth
-        return "codex-oauth" if codex_oauth.is_logged_in() else ""
-    if provider == "anthropic":
-        return resolver(cfg, "anthropic_api_key")
-    meta = _OWN_OPENAI_COMPAT_CHAT.get(provider)
-    if not meta:
-        return ""
-    setting_key, _url = meta
-    return resolver(cfg, setting_key)
-
-
-def _infer_own_provider(model: str) -> str:
-    low = (model or "").lower()
-    if low.startswith("claude"):
-        return "anthropic"
-    if low.startswith("accounts/fireworks/"):
-        return "fireworks"
-    if low.startswith(("gpt", "o1", "o3", "o4", "openai")):
-        return "openai"
-    return "openrouter"
-
-
-def _own_target(
-    model: str | None,
-    cfg: dict[str, Any],
-    customs: dict[str, dict[str, str]],
-    resolver: Any,
-) -> tuple[str, str, str]:
-    """Return (provider, native_model, api_key), falling back to OpenRouter when useful."""
-    raw = str(model or "").strip() or OWN_HARNESS_DEFAULT_MODEL
-    provider = ""
-    native = raw
-
-    if raw.startswith("custom:") and "/" in raw:
-        provider, native = raw.split("/", 1)
-    elif "/" in raw:
-        prefix, rest = raw.split("/", 1)
-        if (prefix in _OWN_OPENAI_COMPAT_CHAT or prefix == "anthropic"
-                or prefix == "codex-subscription" or prefix in customs):
-            provider, native = prefix, rest
-        else:
-            provider, native = "openrouter", raw
-    else:
-        provider, native = _infer_own_provider(raw), raw
-
-    key = _own_provider_key(provider, cfg, customs, resolver)
-    if key:
-        return provider, native, key
-
-    # If the selected provider key is missing but OpenRouter is configured, run the
-    # original model slug through OpenRouter instead of failing immediately. This
-    # preserves older saved values such as "anthropic/claude-..." from before
-    # provider source namespacing was added.
-    or_key = _own_provider_key("openrouter", cfg, customs, resolver)
-    if provider != "openrouter" and or_key:
-        return "openrouter", raw, or_key
-    return provider, native, key
-
-
-def _message_content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                txt = item.get("text") or item.get("content")
-                if isinstance(txt, str):
-                    parts.append(txt)
-            elif isinstance(item, str):
-                parts.append(item)
-        return "".join(parts)
-    return ""
-
-
-def _openai_compat_payload(provider: str, model: str, prompt: str, system: str | None, thinking: str | None) -> dict[str, Any]:
-    messages: list[dict[str, str]] = []
-    if (system or "").strip():
-        messages.append({"role": "system", "content": (system or "").strip()})
-    messages.append({"role": "user", "content": prompt})
-    payload: dict[str, Any] = {"model": model, "messages": messages}
-    if provider == "openai":
-        payload["max_completion_tokens"] = OWN_HARNESS_MAX_TOKENS
-    else:
-        payload["max_tokens"] = OWN_HARNESS_MAX_TOKENS
-    # Reasoning/thinking — delegate to the connector-registry standard core
-    # (app.reasoning). The core writes the provider's NATIVE param ONLY when the
-    # resolved (provider, model) actually reasons AND the level is valid for THAT
-    # model (per-model clamp/skip from the registry); otherwise it leaves the body
-    # untouched (a correct thinking-off call). This is the live kaidera call path:
-    # we never send a param a model rejects (grok-4 400, base kimi-k2 isn't a
-    # reasoner, ollama "minimal" 400), so the OLD low/medium/high gate is gone.
-    from app import providers as _providers
-    from app import reasoning as _reasoning
-
-    _reasoning.apply_reasoning(
-        provider,
-        model,
-        thinking,
-        payload,
-        available_levels=_providers.cached_reasoning_levels(provider, model),
-    )
-    return payload
-
-
-def _parse_openai_compat_result(data: dict[str, Any]) -> tuple[str, int | None, int | None]:
-    choices = data.get("choices") if isinstance(data, dict) else None
-    text = ""
-    if isinstance(choices, list) and choices:
-        first = choices[0]
-        if isinstance(first, dict):
-            msg = first.get("message")
-            if isinstance(msg, dict):
-                text = _message_content_text(msg.get("content"))
-            if not text:
-                text = _message_content_text(first.get("text"))
-    usage = data.get("usage") if isinstance(data, dict) else None
-    tokens_in = tokens_out = None
-    if isinstance(usage, dict):
-        pin = usage.get("prompt_tokens") or usage.get("input_tokens")
-        pout = usage.get("completion_tokens") or usage.get("output_tokens")
-        tokens_in = int(pin) if isinstance(pin, int) else None
-        tokens_out = int(pout) if isinstance(pout, int) else None
-    return text, tokens_in, tokens_out
-
-
-def _parse_anthropic_result(data: dict[str, Any]) -> tuple[str, int | None, int | None]:
-    parts: list[str] = []
-    for item in data.get("content") or []:
-        if isinstance(item, dict) and item.get("type") == "text":
-            txt = item.get("text")
-            if isinstance(txt, str):
-                parts.append(txt)
-    usage = data.get("usage") if isinstance(data, dict) else None
-    tokens_in = tokens_out = None
-    if isinstance(usage, dict):
-        pin = usage.get("input_tokens")
-        pout = usage.get("output_tokens")
-        tokens_in = int(pin) if isinstance(pin, int) else None
-        tokens_out = int(pout) if isinstance(pout, int) else None
-    return "".join(parts), tokens_in, tokens_out
-
-
-def _codex_responses_payload(model: str, prompt: str, system: str | None) -> dict[str, Any]:
-    """LIVE-UNVERIFIED. The ChatGPT backend Responses-API body for a codex-subscription
-    turn. Mirrors openai/codex `ResponsesApiRequest` (an `input[]` array, NOT Chat-Completions
-    `messages[]`); the exact field set must be confirmed against a live codex token."""
-    items: list[dict[str, Any]] = []
-    if (system or "").strip():
-        items.append({"type": "message", "role": "system",
-                      "content": [{"type": "input_text", "text": (system or "").strip()}]})
-    items.append({"type": "message", "role": "user",
-                  "content": [{"type": "input_text", "text": prompt}]})
-    return {"model": model, "input": items, "stream": False, "store": False}
-
-
-def _parse_responses_result(data: dict[str, Any]) -> tuple[str, int | None, int | None]:
-    """LIVE-UNVERIFIED. Pull assistant text + token usage from a Responses-API result."""
-    parts: list[str] = []
-    for item in (data.get("output") if isinstance(data, dict) else None) or []:
-        if isinstance(item, dict) and item.get("type") == "message":
-            for c in item.get("content") or []:
-                if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
-                    t = c.get("text")
-                    if isinstance(t, str):
-                        parts.append(t)
-    usage = data.get("usage") if isinstance(data, dict) else None
-    tokens_in = tokens_out = None
-    if isinstance(usage, dict):
-        pin = usage.get("input_tokens")
-        pout = usage.get("output_tokens")
-        tokens_in = int(pin) if isinstance(pin, int) else None
-        tokens_out = int(pout) if isinstance(pout, int) else None
-    return "".join(parts), tokens_in, tokens_out
-
-
-async def _kaidera_complete(
-    prompt: str,
-    model: str | None,
-    system: str | None,
-    thinking: str | None,
-    workspace: str | None = None,
-) -> dict[str, Any]:
-    cfg, customs, resolver = _own_runtime_config()
-    provider, native_model, api_key = _own_target(model, cfg, customs, resolver)
-    if not api_key:
-        raise _OwnHarnessError(
-            "provider_not_configured",
-            f"Kaidera AI harness cannot run {native_model}: no {provider} provider key is configured.",
-        )
-
-    timeout = httpx.Timeout(OWN_HARNESS_TIMEOUT_S, connect=10.0)
-    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
-    payload: dict[str, Any]
-    parser: Any
-
-    if provider == "codex-subscription":
-        # LIVE-UNVERIFIED codex-subscription lane: the OAuth bearer (NOT a metered key)
-        # only works against the ChatGPT backend Responses API. Fetch the real bearer
-        # async here (the sync resolver returned a presence sentinel). See
-        # docs/2026-06-13-codex-oauth-design.md.
-        from . import codex_oauth
-        bearer = await codex_oauth.get_codex_oauth_bearer(cfg)
-        if not bearer:
-            raise _OwnHarnessError(
-                "authentication_failed",
-                "Codex subscription not logged in — open Settings → Providers and 'Log in with ChatGPT'.",
-            )
-        headers = {
-            "Authorization": f"Bearer {bearer}",
-            "chatgpt-account-id": codex_oauth.account_id(),
-            "OpenAI-Beta": "responses=experimental",
-            "originator": "codex_cli_rs",
-            "Content-Type": "application/json",
-        }
-        payload = _codex_responses_payload(native_model, prompt, system)
-        url = "https://chatgpt.com/backend-api/codex/responses"
-        parser = _parse_responses_result
-    elif provider == "anthropic":
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        payload = {
-            "model": native_model,
-            "max_tokens": OWN_HARNESS_MAX_TOKENS,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if (system or "").strip():
-            payload["system"] = (system or "").strip()
-        # EXTENDED THINKING (the previously-missing Anthropic-direct path): merge
-        # the adaptive thinking block + top-level reasoning_effort from the
-        # connector core, but ONLY when a real level resolves for this model (an
-        # OFF/empty/unknown value adds nothing — the correct quiet default). Opus
-        # 4.7+ rejects the legacy budget_tokens, so we never send it.
-        from app import providers as _providers
-        from app import reasoning as _reasoning
-
-        payload.update(
-            _reasoning.anthropic_thinking_fields(
-                native_model,
-                thinking,
-                available_levels=_providers.cached_reasoning_levels(
-                    provider, native_model
-                ),
-            )
-        )
-        url = "https://api.anthropic.com/v1/messages"
-        parser = _parse_anthropic_result
-    else:
-        if provider.startswith("custom:"):
-            custom = customs.get(provider) or {}
-            url = _chat_url_from_base(custom.get("base_url", ""))
-            if not url:
-                raise _OwnHarnessError(
-                    "provider_not_configured",
-                    f"Kaidera AI custom provider {provider[7:]} has no base URL configured.",
-                )
-        else:
-            meta = _OWN_OPENAI_COMPAT_CHAT.get(provider)
-            if not meta:
-                raise _OwnHarnessError(
-                    "provider_not_supported",
-                    f"Kaidera AI harness does not have a chat endpoint wired for provider {provider}.",
-                )
-            _setting_key, url = meta
-            if provider == "kaidera-manifold":
-                url = _chat_url_from_base(_manifold_base_url(cfg))
-                project_id = _manifold_project_id(cfg)
-                if not project_id:
-                    raise _OwnHarnessError(
-                        "provider_not_configured",
-                        "Kaidera AI Manifold requires a project id — set it in Settings -> "
-                        "Providers. It is sent as the required X-Project-Id header; the "
-                        "/v1 edge returns 400 missing_project_id without it.",
-                    )
-                # OpenAI-compatible edge, but the org/project scope + server-side wallet
-                # metering key off this header (do NOT self-report usage).
-                headers["X-Project-Id"] = project_id
-        payload = _openai_compat_payload(provider, native_model, prompt, system, thinking)
-        parser = _parse_openai_compat_result
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-    except httpx.HTTPStatusError as exc:
-        code = exc.response.status_code
-        category = "authentication_failed" if code in (401, 403) else "provider_error"
-        raise _OwnHarnessError(category, f"Kaidera AI provider {provider} returned HTTP {code}.") from exc
-    except (httpx.HTTPError, ValueError) as exc:
-        raise _OwnHarnessError("provider_error", f"Kaidera AI provider {provider} did not return a usable response.") from exc
-
-    text, tokens_in, tokens_out = parser(data if isinstance(data, dict) else {})
-    if not text:
-        raise _OwnHarnessError("provider_error", f"Kaidera AI provider {provider} returned an empty response.")
-    # B4: surface the model's reasoning/thinking text when the provider returned it
-    # in its own field (message.reasoning_content / message.reasoning for the
-    # OpenAI-compat lanes; Anthropic 'thinking' content blocks for the direct lane).
-    reasoning_text = _extract_reasoning(provider, data if isinstance(data, dict) else {})
-    return {
-        "provider": provider,
-        "model": native_model,
-        "text": text,
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "reasoning": reasoning_text,
-    }
-
-
-def _extract_reasoning(provider: str, data: dict[str, Any]) -> str:
-    """The model's reasoning/thinking text from a single-shot response, read per
-    provider (B4). Anthropic returns `thinking` content blocks in its messages
-    body; the OpenAI-compat lanes use message.reasoning_content / message.reasoning
-    (handled by app.reasoning.extract_reasoning_text). Returns "" when absent."""
-    if provider == "anthropic":
-        parts: list[str] = []
-        for item in data.get("content") or []:
-            if isinstance(item, dict) and item.get("type") == "thinking":
-                t = item.get("thinking") or item.get("text")
-                if isinstance(t, str) and t.strip():
-                    parts.append(t)
-        return "".join(parts)
-    from app import reasoning as _reasoning
-
-    return _reasoning.extract_reasoning_text(provider, data)
-
-
-def _agent_base_url(provider: str, customs: dict[str, dict[str, str]], cfg: dict[str, Any]) -> str:
-    """The OpenAI-compatible BASE url (no /chat/completions) the Pydantic AI agent
-    needs, derived from the same provider table the single-shot lane uses. Anthropic
-    needs none (its provider class knows its own endpoint)."""
-    if provider.startswith("custom:"):
-        return (customs.get(provider, {}).get("base_url") or "").rstrip("/")
-    if provider == "kaidera-manifold":
-        return _manifold_base_url(cfg)
-    meta = _OWN_OPENAI_COMPAT_CHAT.get(provider)
-    if not meta:
-        return ""
-    url = meta[1].rstrip("/")
-    suffix = "/chat/completions"
-    return url[: -len(suffix)] if url.endswith(suffix) else url
-
-
-async def _stream_kaidera(
-    prompt: str,
-    model: str | None = None,
-    system: str | None = None,
-    thinking: str | None = None,
-    workspace: str | None = None,
-    project_key: str | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """Run the kaidera lane. Resolve the provider/model/key with the existing
-    resolver, then fork:
-
-      * ``codex-subscription`` → the single-shot OAuth path (``_kaidera_complete``);
-        Pydantic AI can't reach the ChatGPT backend, so it stays chat-only.
-      * every other provider → the REAL tool-using agent (``app/kaidera_agent.py``):
-        a Pydantic AI agent with bash / read / write / web tools + a tool-execution
-        loop, its events translated back into our session/thinking/tool/delta/
-        result/done dicts so run_agent + the SSE layer are unchanged.
-    """
-    chosen = (model or "").strip() or OWN_HARNESS_DEFAULT_MODEL
-    cfg, customs, resolver = _own_runtime_config()
-    provider, native_model, api_key = _own_target(chosen, cfg, customs, resolver)
-
-    # codex-subscription: single-shot only (Pydantic AI can't reach the ChatGPT backend).
-    if provider == "codex-subscription":
-        async for ev in _stream_kaidera_singleshot(prompt, chosen, system, thinking, workspace=workspace):
-            yield ev
-        return
-
-    if not api_key:
-        yield {"type": "session", "session_id": None, "model": chosen}
-        yield {"type": "error", "category": "provider_not_configured",
-               "message": f"Kaidera AI harness cannot run {native_model}: no {provider} provider key is configured."}
-        yield {"type": "done"}
-        return
-
-    agent_extra_headers: dict[str, str] = {}
-    if provider == "kaidera-manifold":
-        manifold_project_id = _manifold_project_id(cfg)
-        if not manifold_project_id:
-            yield {"type": "session", "session_id": None, "model": chosen}
-            yield {
-                "type": "error",
-                "category": "provider_not_configured",
-                "message": "Kaidera AI Manifold is disabled because no platform project id is configured.",
-            }
-            yield {"type": "done"}
-            return
-        agent_extra_headers["X-Project-Id"] = manifold_project_id
-
-    from app import providers as _providers
-    from app import reasoning as _reasoning
-
-    live_levels = _providers.cached_reasoning_levels(provider, native_model)
-    reasoning_fields: dict[str, Any] = {}
-    if provider == "anthropic":
-        reasoning_fields.update(
-            _reasoning.anthropic_thinking_fields(
-                native_model,
-                thinking,
-                available_levels=live_levels,
-            )
-        )
-    else:
-        _reasoning.apply_reasoning(
-            provider,
-            native_model,
-            thinking,
-            reasoning_fields,
-            available_levels=live_levels,
-        )
-
-    # The REAL tool-using agent — but DEGRADE to a plain single-shot reply if it can't
-    # produce output (pydantic-ai absent, a provider that rejects the tools payload, an
-    # early error, any crash). A worker must NEVER go silent: tools are a bonus, a reply
-    # is mandatory. We hold the session event until the first real content; if the agent
-    # errors/crashes before producing anything, we fall through to the no-tools path.
-    from . import kaidera_agent
-    workspace = workspace or os.environ.get("KAIDERA_AGENT_WORKSPACE") or os.getcwd()
-    session_ev: dict[str, Any] = {"type": "session", "session_id": None, "model": native_model}
-    produced = False
-    reply_produced = False
-    done_emitted = False
-    try:
-        agent_kwargs: dict[str, Any] = {
-            "provider": provider,
-            "model": native_model,
-            "api_key": api_key,
-            "base_url": _agent_base_url(provider, customs, cfg),
-            "prompt": prompt,
-            "system": system,
-            "workspace": workspace,
-            "max_tokens": OWN_HARNESS_MAX_TOKENS,
-            "reasoning_fields": reasoning_fields,
-        }
-        if agent_extra_headers:
-            agent_kwargs["extra_headers"] = agent_extra_headers
-        async for ev in kaidera_agent.stream_kaidera_agent(**agent_kwargs):
-            t = ev.get("type")
-            if t == "session":
-                session_ev = ev                 # hold; emit on first real content
-                continue
-            if t in ("delta", "tool", "thinking", "result"):
-                text = str(ev.get("text") or "")
-                if t in ("delta", "result") and not text.strip():
-                    # An empty final `result` is not a reply. This used to mark
-                    # the turn successful and suppress the no-tools fallback,
-                    # which surfaced to users as "completed without a text reply".
-                    continue
-                if not produced:
-                    produced = True
-                    yield session_ev
-                if t in ("delta", "result"):
-                    reply_produced = True      # an actual reply (not just thinking/tools)
-                yield ev
-            elif t == "error":
-                if reply_produced:
-                    yield ev                   # a trailing error AFTER a real reply is honest
-                # else: swallow; fall back to the no-tools path below for a real reply
-            elif t == "done":
-                if reply_produced:
-                    yield ev
-                    done_emitted = True
-                # else: swallow the premature done; fall back for a real reply
-            else:
-                yield ev
-    except Exception:  # noqa: BLE001 — any agent crash degrades, never propagates as silence
-        pass
-    if not reply_produced:
-        # DEGRADE: the tool-using agent produced no actual reply (it only streamed
-        # thinking / called a tool that errored / crashed mid-turn — e.g. a project
-        # workspace that isn't mounted in a container). A worker must NEVER go silent,
-        # so answer via the plain no-tools chat path, which guarantees a reply (or a
-        # clean provider error) instead of "completed without a text reply".
-        async for ev in _stream_kaidera_singleshot(prompt, chosen, system, thinking, workspace=workspace):
-            if produced and ev.get("type") == "session":
-                continue
-            yield ev
-    elif not done_emitted:
-        yield {"type": "done"}
-
-
-async def _stream_kaidera_singleshot(
-    prompt: str,
-    model: str | None = None,
-    system: str | None = None,
-    thinking: str | None = None,
-    workspace: str | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """The no-tools chat path: ONE provider call, return the reply. Used for
-    codex-subscription (Pydantic AI can't reach the ChatGPT backend) AND as the
-    graceful fallback when the tool-using agent can't run — pydantic-ai absent, a
-    tools-incompatible provider, an early error. A worker must never go silent:
-    tools are a bonus, a reply is mandatory."""
-    chosen = (model or "").strip() or OWN_HARNESS_DEFAULT_MODEL
-    yield {"type": "session", "session_id": None, "model": chosen}
-    try:
-        result = await _kaidera_complete(prompt, chosen, system, thinking, workspace=workspace)
-    except _OwnHarnessError as exc:
-        yield {"type": "error", "category": exc.category, "message": exc.message}
-        yield {"type": "done"}
-        return
-    # B4: surface the model's thinking (when the provider returned it) BEFORE the
-    # answer, as a `thinking` event — same shape the tool-using agent path emits,
-    # so the feed/SSE layer renders it identically.
-    reasoning_text = (result.get("reasoning") or "").strip()
-    if reasoning_text:
-        yield {"type": "thinking", "text": reasoning_text}
-    yield {
-        "type": "result", "text": result["text"], "cost_usd": None,
-        "session_id": None, "tokens_in": result.get("tokens_in"),
-        "tokens_out": result.get("tokens_out"),
-    }
-    yield {"type": "done"}
-
-
-# ---------------------------------------------------------------------------
 #  graceful lane — unknown harnesses / missing CLIs
 # ---------------------------------------------------------------------------
 
@@ -2817,7 +2159,7 @@ async def _stream_graceful(
     else:
         body = (
             f"[harness {label}{model_note} configured — runner not yet wired. "
-            f"claude-code, codex, pi, and kaidera are wired lanes; pick "
+            f"claude-code, codex, and pi are wired lanes; pick "
             f"one in this agent's config, or wire the {label} runner.]"
         )
     yield {"type": "delta", "text": body}

@@ -20,30 +20,10 @@
     saved  : optional post-save flag — when truthy, render the confirmation banner
     saved_count / saved_error : confirmation detail (see _settings_saved.html)
 #}
-<style>
-  /* Provider key-test (System tab) — inline "Test" button + ✓/✗ result.
-     Scoped in this partial (not app.css) to keep the change self-contained. */
-  .env-test, .cp-test {
-    flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
-    padding: 4px 11px; border-radius: var(--r-sm); cursor: pointer;
-    color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line);
-    transition: background .12s, color .12s, border-color .12s;
-  }
-  .env-test:hover, .cp-test:hover { background: var(--surface-3); color: var(--text); }
-  .env-test:disabled, .cp-test:disabled { opacity: .5; cursor: default; }
-  .env-test.htmx-request, .cp-test.htmx-request { opacity: .5; }
-  .cp-test { margin-left: 2px; }
-  .keytest-slot { display: inline-flex; align-items: center; min-width: 0; }
-  .keytest { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1.35; }
-  .keytest svg { width: 13px; height: 13px; flex: none; }
-  .keytest .keytest-msg { min-width: 0; }
-  .keytest.ok { color: var(--ok); }
-  .keytest.bad { color: var(--alert); }
-</style>
 <div class="set-inner">
   <div class="set-page on" id="setpage-system">
     <div class="set-page-h">System</div>
-    <div class="set-page-sub">Console configuration — <b>Cortex connection</b>, harness, and app preferences. Provider keys live in the Providers surface when it is enabled for this edition. Stored locally in the console app-DB, applied on reload. This is the console's own store, <b>not</b> the real Cortex <code>.env</code>.</div>
+    <div class="set-page-sub">Console configuration for the <b>Cortex connection</b>, external harnesses, and app preferences. Stored locally in the console app-DB and applied on reload. This is the console's own store, <b>not</b> the real Cortex <code>.env</code>.</div>
 
     <div class="set-banner secure">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -195,17 +175,5 @@
       </div>
     </form>
 
-    {#
-      CUSTOM PROVIDERS — operator-added provider credentials (name + base URL +
-      masked API key) beyond the fixed built-in keys above. Kept OUTSIDE the main
-      #sys-form (it has its own HTMX POSTs to /settings/system/custom-provider),
-      so it never interferes with the System save. The region self-swaps on
-      add/remove (#sys-custom-providers).
-    #}
-    <div class="set-subhead">
-      <span class="ssh-t">Custom providers</span>
-      <span class="ssh-s">Add an extra provider with its own base URL + API key. Stored locally + masked, separate from the System save above.</span>
-    </div>
-    {% include "_settings_custom_providers.html" %}
   </div>
 </div>

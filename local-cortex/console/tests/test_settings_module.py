@@ -396,35 +396,6 @@ def test_project_flags_read_write_failsafe():
     assert svc.set_project_autonomy("", True) is False
 
 
-def test_system_save_preserves_provider_keys(monkeypatch):
-    """Regression for the E2 data-loss bug: a System (or agent-config) save funnels through
-    _persist_with_overrides → a FULL-REPLACE _atomic_write. Provider API keys live OUTSIDE the
-    System schema (the Providers tab owns them), so without carrying them across, every save WIPED
-    every stored key — a configured provider key vanished on the next settings save and the harness
-    then failed `provider_not_configured`. _carry_side_blobs must carry PROVIDER_SECRET_KEYS too."""
-    from app import settings as settings_store
-
-    store = {
-        "fireworks_api_key": "fw_secret_should_survive",
-        "ollama_cloud_api_key": "olc_secret_should_survive",
-        settings_store.CUSTOM_PROVIDERS_KEY: [
-            {"id": "x", "name": "X", "base_url": "https://u", "api_key": "k"}
-        ],
-        "cortex_base_url": "http://localhost:8501",  # a real System-schema field
-    }
-    written: dict = {}
-    monkeypatch.setattr(settings_store, "_read_raw", lambda: dict(store))
-    monkeypatch.setattr(settings_store, "_atomic_write", lambda payload: written.update(payload))
-
-    # A System save that only edits a non-provider field must NOT drop the provider keys.
-    settings_store.save({"cortex_base_url": "http://localhost:9999"})
-
-    assert written.get("fireworks_api_key") == "fw_secret_should_survive"  # the fix
-    assert written.get("ollama_cloud_api_key") == "olc_secret_should_survive"
-    assert written.get(settings_store.CUSTOM_PROVIDERS_KEY)  # other side blobs still preserved
-    assert written.get("cortex_base_url") == "http://localhost:9999"  # the actual edit applied
-
-
 def test_service_graceful_when_store_down():
     """A down store: reads return their empty default (app settings {}, overrides
     {}, designation "", flags OFF), writes return False — never raises (the house
@@ -663,7 +634,7 @@ async def test_router_set_app_settings_endpoint():
     store = FakeOpStore(app_settings=dict(SAMPLE_APP_SETTINGS))
 
     result = await settings_api.set_app_settings_endpoint(
-        "kaidera-os", {"settings": {"harness_default": "kaidera", "operator_extra": "v"}},
+        "kaidera-os", {"settings": {"harness_default": "claude-code", "operator_extra": "v"}},
         store=store,
     )
     assert result["project"] == "kaidera-os"
@@ -671,7 +642,7 @@ async def test_router_set_app_settings_endpoint():
     assert result["store_connected"] is True
     # the WRITE is unfiltered — both the typed field and the extra land in the durable store
     assert "upsert_app_settings" in store.calls
-    assert store.load_app_settings()["harness_default"] == "kaidera"
+    assert store.load_app_settings()["harness_default"] == "claude-code"
     assert store.load_app_settings()["operator_extra"] == "v"
     # the RETURNED map is the raw-editor SURFACE: the typed System field (harness_default)
     # is filtered out (it's edited in the typed form); only the genuine extra appears.
@@ -805,12 +776,7 @@ def test_write_routes_do_not_collide_with_live_html_posts():
         f"write routes collide with live HTML POSTs: "
         f"{sorted(write_posts & live_html_settings_posts)}"
     )
-    # … its write leaves are exactly the JSON `{project}/...` shape (single param
-    # first segment), distinct from every literal-first live route. (Track C's three
-    # original writes + step-3a's [API]-gap write/probe mirrors — all additive under
-    # the same `{project}/<leaf>` shape; every leaf is a NEW spelling that can't hit a
-    # literal-first live route — e.g. `custom-providers` ≠ the live `system/custom-
-    # provider`, `workspace` ≠ the live `projects/{k}/folder`.)
+    # Its write leaves are exactly the community JSON shape.
     assert write_posts == {
         "/settings/{project}/flags",
         "/settings/{project}/app",
@@ -819,17 +785,8 @@ def test_write_routes_do_not_collide_with_live_html_posts():
         # `promote` leaf — different trailing segment from the `config` sibling, so it
         # can't shadow it, and still the single-param `{project}/...` shape.
         "/settings/{project}/agents/{agent}/promote",
-            "/settings/{project}/custom-providers",
-            "/settings/{project}/custom-providers/delete",
-            "/settings/{project}/license/login",
-            "/settings/{project}/license/activate",
-            "/settings/{project}/license/heartbeat",
-            "/settings/{project}/license/restore",
-            "/settings/{project}/license/enable",
-            "/settings/{project}/license/expire",
-            "/settings/{project}/provider-key-test",
-            "/settings/{project}/workspace",
-        }
+        "/settings/{project}/workspace",
+    }
     # EVERY write leaf is the single-param `{project}/...` shape (no literal first
     # segment), so none can shadow a literal-first live HTML POST.
     assert all(p.startswith("/settings/{project}/") for p in write_posts)

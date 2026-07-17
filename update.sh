@@ -8,7 +8,7 @@
 #   ./update.sh                                  # update + KEEP the current host binding
 #   KAIDERA_CONSOLE_HOST=0.0.0.0 ./update.sh      # update + (re)expose over Tailscale / LAN
 #
-# Idempotent + safe to re-run. Never touches the DB or your provider keys.
+# Idempotent + safe to re-run. Never touches the database or local configuration.
 set -euo pipefail
 cd "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 

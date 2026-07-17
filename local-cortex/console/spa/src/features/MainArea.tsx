@@ -59,8 +59,6 @@ import type {
   DispatchBoard,
   DispatchRunController,
   Project,
-  ProvidersCatalog,
-  ProvidersConfig,
   RunBoard,
   SkillsPayload,
   SystemSchema,
@@ -128,11 +126,8 @@ interface MainAreaProps {
   /** The Analytics headline KPI strip (GET …/kpis). Optional — the strip hides until it lands. */
   kpis?: Resource<AnalyticsKpis>
   appSettings: Resource<AppSettings>
-  /** The typed System schema + the live provider catalog (step 3b settings tabs). */
+  /** The typed System schema used by Settings. */
   systemSchema: Resource<SystemSchema>
-  providers: Resource<ProvidersCatalog>
-  /** The configured/active providers (the Providers control surface). Optional — the tab degrades when absent. */
-  providersConfig?: Resource<ProvidersConfig>
   /** The selected project's registry row (Cortex + Workspace tabs). */
   projectRow: Project | null
   /** ALL active projects (the Settings → Workspace tab is a multi-project repo-root editor).
@@ -233,8 +228,6 @@ export function MainArea({
   kpis,
   appSettings,
   systemSchema,
-  providers,
-  providersConfig,
   projectRow,
   projects,
   settingsClient,
@@ -342,7 +335,6 @@ export function MainArea({
             onConfigSaved={onAgentConfigSaved}
             registrationClient={registrationClient}
             onAgentRemoved={onAgentRemoved}
-            providersConfig={providersConfig?.data ?? null}
             onRenameLead={onRenameLead}
             repoRoot={projectRow?.repo_root ?? null}
           />
@@ -373,8 +365,6 @@ export function MainArea({
             project={project}
             appSettings={appSettings.data}
             systemSchema={systemSchema.data}
-            providers={providers.data}
-            providersConfig={providersConfig?.data ?? null}
             projectRow={projectRow}
             projects={projects}
             loading={appSettings.loading}

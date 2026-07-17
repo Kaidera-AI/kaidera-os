@@ -91,39 +91,8 @@ def _project_pack_dirs(repo_root: str) -> tuple[Path, ...]:
 
 
 async def _capacity_block(kind: str, project: str, cortex: Any, *, subject: str | None = None) -> str | None:
-    """Return a friendly error if creating a NEW <kind> ('projects'|'workers') would
-    exceed the license limit in the PUBLIC edition; else None. Only a NEW entity consumes
-    quota — upserting an existing one (matched on `subject`) is always allowed. DEV is
-    unlimited. Fail-OPEN: any hiccup returns None so a gate glitch never blocks a write."""
-    import math
-
-    try:
-        from app import edition
-        from app import license as lic
-
-        if not edition.is_public():
-            return None
-        limit = lic.entitlements().limit_for(kind)
-        if limit == math.inf:
-            return None
-        if kind == "workers":
-            roster = await cortex.get_roster(_clean(project)) or []
-            names = {_clean(a.get("name")) for a in roster if isinstance(a, dict)}
-            if subject and _clean(subject) in names:
-                return None  # upsert of an existing worker
-            if len(roster) >= limit:
-                return (f"Worker limit reached for your license ({int(limit)}). "
-                        "Upgrade through your configured platform portal to add more AI workers.")
-        elif kind == "projects":
-            projects = await cortex.get_projects() or []
-            keys = {p.get("project_key") for p in projects if isinstance(p, dict)}
-            if subject and subject in keys:
-                return None  # update of an existing project
-            if len(projects) >= limit:
-                return (f"Project limit reached for your license ({int(limit)}). "
-                        "Upgrade through your configured platform portal to add more projects.")
-    except Exception:
-        return None
+    """Community source has no capacity gate."""
+    _ = (kind, project, cortex, subject)
     return None
 
 

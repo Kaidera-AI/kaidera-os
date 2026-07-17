@@ -4,12 +4,7 @@ The selector (`_select_skills`) must pick only TASK-RELEVANT skills for a worker
 system prompt instead of every globally-delivered skill (SKILLS_ON_DEMAND.md §5.3).
 It is deterministic (no model call), pure, and total (never raises on a bad skill).
 
-These tests assert the KEYWORD ALGORITHM specifically, so they pin the selector to its
-keyword-only path (the ``_embeddings_off`` autouse fixture below forces the best-effort
-SEMANTIC layer off). That keeps them deterministic on ANY box — a machine WITH a live
-embedding key would otherwise route via the hybrid semantic blend and pick a different
-(network-dependent) set. The semantic layer + the proof that "embeddings off == this
-keyword result" live in ``test_skill_embed.py``.
+These tests assert the keyword algorithm, which is deterministic on every box.
 
 Skill ``body_ref`` reads are CONFINED to ``<repo>/.agents/skills`` by the production
 path-guard, so these fixtures create real temp SKILL.md files UNDER that root (in a
@@ -22,7 +17,6 @@ import tempfile
 
 import pytest
 
-from app import skill_embed
 from app.run_agent import _select_skills, _tokenize, _skill_body, _skill_frontmatter
 
 # Repo root + skills root, mirroring run_agent's own resolution
@@ -30,15 +24,6 @@ from app.run_agent import _select_skills, _tokenize, _skill_body, _skill_frontma
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../console
 _REPO = os.path.abspath(os.path.join(_HERE, "..", ".."))             # -> <kaidera-os>
 _SKILLS_ROOT = os.path.join(_REPO, ".agents", "skills")
-
-
-@pytest.fixture(autouse=True)
-def _embeddings_off(monkeypatch):
-    """Force the keyword-only path for EVERY test in this module so the deterministic
-    keyword-algorithm assertions hold regardless of whether this box has an embed key.
-    (The hybrid's semantic blend is exercised in test_skill_embed.py instead.)"""
-    monkeypatch.setattr(skill_embed, "skill_vectors", lambda skills, route: None)
-    monkeypatch.setattr(skill_embed, "embed_texts", lambda texts, kind="document": None)
 
 
 @pytest.fixture

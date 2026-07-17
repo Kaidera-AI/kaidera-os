@@ -21,7 +21,7 @@ LAYER RULE (arrows point inward, ratified design §3): this module depends ONLY 
 `domain.ports.OperationalStorePort` (the project flag reads — `is_project_autonomous`
 / `is_propose_mode`). It imports NOTHING outward (no fastapi / httpx / subprocess /
 psycopg2 / asyncpg) and never reaches back into `app.main`, the concrete `app.appdb`
-/ `app.adapters`, the concrete `app.harness` / `app.providers`, or the
+/ `app.adapters`, the concrete `app.harness`, or the
 `app.orchestrator` imperative core. The two presentation/off-port concerns it needs
 — a per-agent CONFIG resolver (the proposal's effective harness/model + labels) and
 an AWAITING-APPROVAL lister (the parked-for-review id set — which is NOT on the port,

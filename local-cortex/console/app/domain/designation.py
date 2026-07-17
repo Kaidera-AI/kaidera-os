@@ -16,7 +16,7 @@ WHY THE DOMAIN (and not `settings_module.service`, the obvious owner): the
 `.importlinter` `modules-are-independent` contract pins the FIVE feature modules
 (`app.analytics`, `app.agents`, `app.settings_module`, `app.dispatch`, `app.runs`)
 as independent of EACH OTHER. `app.settings` is reachable from three of those
-members (via `app.providers -> app.settings` and `app.dispatch.api -> app.settings`),
+members (including `app.dispatch.api -> app.settings`),
 so ANY edge `app.settings -> app.settings_module` — even a lazy in-function import —
 becomes a transitive member→member edge and BREAKS the contract. Likewise a direct
 `app.agents -> app.settings_module` edge is forbidden. The ONE inward target every

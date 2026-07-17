@@ -7,7 +7,6 @@ hand, adding an automatic **rollback** when the new build fails its health check
 Inc 1 scope (this file): manage an ALREADY-installed native console —
   kaidera-os upgrade <artifact>   swap app/ + spa/dist, migrate, restart, health-check, rollback-on-fail
   kaidera-os status | restart | start | stop
-  kaidera-os operator ...         native shell/menu-bar helper commands
   kaidera-os version              installed console version
   kaidera-os install [-- args…]   delegate to install.sh (first-time bootstrap)
 
@@ -25,7 +24,6 @@ release-digest Cortex reconcile, launchd (macOS) service control.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import os
 import shutil
@@ -346,104 +344,6 @@ def do_install(extra: list[str]) -> int:
     return _run(["bash", str(script), *extra]).returncode
 
 
-def _mask(token: str) -> str:
-    t = (token or "").strip()
-    if len(t) <= 12:
-        return "set" if t else "(none)"
-    return f"{t[:6]}…{t[-4:]} ({len(t)} chars)"
-
-
-def do_license(action: str, token: Optional[str] = None) -> int:
-    """Headless licensing surface.
-
-    `status`/`show` are read-only; `import` persists a manual/offline token; `activate`,
-    `heartbeat`, and `releases` use the soft online Kaidera AI platform transport.
-    """
-    from app import edition
-    from app import license as lic
-
-    if action == "import":
-        tok = (token or "").strip()
-        if not tok:
-            print("kaidera-os: a license token is required (kaidera-os license import <token>)", file=sys.stderr)
-            return 2
-        if not lic.verify_license(tok):
-            print("kaidera-os: that token is invalid or expired — not stored.", file=sys.stderr)
-            return 1
-        try:
-            from app import appdb as appdb_store
-            from app.adapters.opstore import AppDbOperationalStore
-            from app.settings_module.service import SettingsService
-
-            ok = SettingsService(store=AppDbOperationalStore(appdb=appdb_store.AppDB())).upsert_app_settings(
-                {"license_key": tok}
-            )
-        except Exception as exc:  # never raise out of the CLI
-            ok = False
-            print(f"kaidera-os: could not reach the app-DB to store the license ({exc}).", file=sys.stderr)
-        if not ok:
-            print("kaidera-os: license not stored (app-DB unavailable). Set KAIDERA_OS_LICENSE_KEY instead.",
-                  file=sys.stderr)
-            return 1
-        print("kaidera-os: license stored. Posture:")
-        action = "status"  # fall through to print the new posture
-
-    if action in {"activate", "heartbeat", "releases"}:
-        from app import license_client
-        from app import appdb as appdb_store
-        from app.adapters.opstore import AppDbOperationalStore
-        from app.settings_module.service import SettingsService
-
-        svc = SettingsService(store=AppDbOperationalStore(appdb=appdb_store.AppDB()))
-        if action == "activate":
-            res = asyncio.run(license_client.activate(
-                token or "",
-                settings=svc.load_app_settings(),
-                save_settings=svc.upsert_app_settings,
-            ))
-        elif action == "heartbeat":
-            res = asyncio.run(license_client.heartbeat(
-                settings=svc.load_app_settings(),
-                save_settings=svc.upsert_app_settings,
-            ))
-        else:
-            res = asyncio.run(license_client.releases(token or "stable"))
-        print(f"kaidera-os: license {action} {'ok' if res.ok else 'failed'}")
-        if res.status_code is not None:
-            print(f"  status:    {res.status_code}")
-        if res.error:
-            print(f"  error:     {res.error}")
-        print(f"  stored:    {res.stored}")
-        print(f"  grant:     {'valid' if res.grant_valid else 'not updated'}")
-        print(f"  install:   {res.install_id or '—'}")
-        if res.customer:
-            print(f"  customer:  {res.customer}")
-        if res.latest_release:
-            print(f"  release:   {res.latest_release}")
-        return 0 if res.ok else 1
-
-    st = lic.license_status()
-    ent = lic.entitlements()
-    print(f"  edition:   {edition.edition()}")
-    print(f"  required:  {st['required']}")
-    print(f"  valid:     {st['valid']}  ({st['reason']})")
-    print(f"  customer:  {st.get('customer') or '—'}")
-    print(f"  expires:   {st.get('expires') or '—'}")
-    print(f"  harnesses: {'all (dev)' if '*' in ent.harnesses else ', '.join(sorted(ent.harnesses))}")
-    lim = ent.limits
-    print(
-        "  capacity:  "
-        f"projects={lim.get('projects')} teams={lim.get('teams')} "
-        f"workers={lim.get('workers')} users={lim.get('users')}"
-    )
-    print(f"  manifold:  {'enabled' if ent.has_advanced('manifold_access') else 'off'}")
-    if action == "show":
-        print(f"  token:     {_mask(lic._license_token())}")
-        if st["valid"] and st.get("features"):
-            print(f"  features:  {', '.join(st['features'])}")
-    return 0
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="kaidera-os", description="Kaidera OS deployment CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -464,20 +364,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         sub.add_parser(a, help=f"{a} the kaidera-os-console service")
     ins = sub.add_parser("install", help="first-time install (delegates to install.sh)")
     ins.add_argument("extra", nargs=argparse.REMAINDER, help="args passed through to install.sh")
-    operator = sub.add_parser("operator", help="native operator shell helpers")
-    operator.add_argument("operator_args", nargs=argparse.REMAINDER)
-    lic_p = sub.add_parser("license", help="manual licensing: status / show / import a token")
-    lic_sub = lic_p.add_subparsers(dest="license_cmd", required=True)
-    lic_sub.add_parser("status", help="current license posture + entitlements")
-    lic_sub.add_parser("show", help="status + the stored token (masked) + features")
-    lic_imp = lic_sub.add_parser("import", help="store a license token in the app-DB (live re-read)")
-    lic_imp.add_argument("token", help="the signed license token (KAIDERA_OS_LICENSE_KEY value)")
-    lic_act = lic_sub.add_parser("activate", help="activate this install against the Kaidera AI platform")
-    lic_act.add_argument("token", help="the org login token from the Kaidera AI platform")
-    lic_sub.add_parser("heartbeat", help="refresh the current license grant against the platform")
-    lic_rel = lic_sub.add_parser("releases", help="fetch advisory platform release metadata")
-    lic_rel.add_argument("token", nargs="?", default="stable", metavar="channel", help="release channel (default: stable)")
-
     ns = p.parse_args(argv)
     if ns.cmd == "upgrade":
         return do_upgrade(ns.artifact, expected_version=ns.expected_version,
@@ -490,12 +376,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0 if _systemctl(ns.cmd) else 1
     if ns.cmd == "install":
         return do_install(ns.extra)
-    if ns.cmd == "operator":
-        from app.native_operator import operator_main
-
-        return operator_main(ns.operator_args)
-    if ns.cmd == "license":
-        return do_license(ns.license_cmd, token=getattr(ns, "token", None))
     return 2
 
 

@@ -463,7 +463,7 @@ def test_dispatch_row_carries_public_resolution_metadata():
 def test_service_depends_only_on_ports_not_outward():
     """GUARD: `app/dispatch/service.py` imports NOTHING outward (no fastapi / httpx /
     subprocess / psycopg2 / asyncpg) and does NOT reach for `app.main`, the concrete
-    `app.appdb` / `app.adapters`, the concrete `app.harness` / `app.providers`, or
+    `app.appdb` / `app.adapters`, the concrete `app.harness`, or
     the `app.orchestrator` imperative core — only the domain ports (+ the injected
     callables).
 
@@ -494,12 +494,11 @@ def test_service_depends_only_on_ports_not_outward():
         f"service.py must not import outward I/O libs, got: {sorted(top & forbidden)}"
     )
     # No reaching back into the blob, the concrete adapters/db, the concrete
-    # harness/providers, or the orchestrator imperative core.
+    # harness, or the orchestrator imperative core.
     assert "app.main" not in dotted, "service.py must not import app.main"
     assert not any(
         m == "app.appdb"
         or m == "app.harness"
-        or m == "app.providers"
         or m == "app.orchestrator"
         or m.startswith("app.adapters")
         for m in dotted

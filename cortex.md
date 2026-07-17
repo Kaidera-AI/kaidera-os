@@ -41,7 +41,7 @@ The first project is created from first-screen startup inputs:
 - project scope
 - first lead worker name and display name
 - team template
-- provider settings
+- external harness selection
 
 Additional projects are created through the Add Project flow or the projects API.
 Generated runtime files are deployment state and must not be committed:
@@ -111,7 +111,7 @@ Before editing, read the current boot context and handoff queue.
 Kaidera OS core owns:
 
 - harness runtime
-- provider settings
+- external harness discovery and execution
 - Cortex API integration
 - project and worker registration
 - run state and transcript streaming

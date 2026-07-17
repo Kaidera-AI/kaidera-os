@@ -1,34 +1,33 @@
-# Kaidera OS design overview
+# Kaidera OS Design Overview
 
-Kaidera OS is a project-agnostic local control plane for AI worker teams. It owns
-project registration, worker orchestration, harness execution, provider
-configuration, operator controls, and durable run state.
+Kaidera OS separates four responsibilities:
 
-## Product boundaries
+1. The console owns operator workflows and project configuration.
+2. Orchestration owns dispatch, autonomy, leases, and run state.
+3. External CLI harnesses own AI model execution and authentication.
+4. Cortex owns durable project memory, graph data, events, and coordination.
 
-- Project and customer content stays outside the product source and release
-  payload.
-- Harness adapters isolate runtime-specific behavior behind a common worker
-  contract.
-- Provider integrations discover models and reasoning capabilities dynamically
-  where supported.
-- Consequential actions remain subject to explicit policy and review gates.
+The public source supports Claude Code, Codex, and PI. Model and effort metadata is
+discovered dynamically from each installed CLI. A discovery or authentication
+failure disables that harness without taking down the console.
 
-## Cortex identity
+## Source Boundary
 
-Cortex is the canonical, permanent name of the memory and coordination component.
-Product or company renaming must not prefix, replace, or otherwise rebrand Cortex.
+Community source is immutable at build and runtime. It does not contain a runtime
+edition switch, commercial licensing, Manifold execution, built-in provider-key
+configuration, or native commercial installer sources. Structural fitness checks
+reject those paths and API markers before release.
 
-Cortex owns project-scoped decisions, handoffs, evidence, messages, work products,
-artifacts, retrieval indexes, and coordination state. Kaidera OS consumes Cortex
-through its API boundary rather than reading its database directly.
+The commercial edition is maintained in the private engineering repository. It is
+not produced by mutating the community tree at install time.
 
-## Edition boundary
+## Cortex Naming
 
-Git source checkouts remain unbaked and expose the development provider catalogue
-for integration testing. Public release packaging performs a test-covered edition
-transformation, writes the release marker, and restricts redistributed provider
-configuration to Manifold.
+Cortex is the canonical, permanent name for this shared component. Product or company
+renames must not rename Cortex. Cortex remains included in every Kaidera OS package.
 
-Licensing is a separate axis. A missing or invalid signed grant falls back to the
-community floor; it does not change the baked provider edition.
+## Project Isolation
+
+Every worker run resolves a selected project, canonical workspace, agent identity,
+and Cortex project scope before execution. Cross-project actions require an explicit
+governed relay; local source paths and state are never inferred from another project.

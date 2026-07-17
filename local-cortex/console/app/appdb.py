@@ -748,7 +748,7 @@ def _safe_dsn(dsn: str) -> str:
 #  SETTINGS STORE (E007) — the console's settings ALSO live in the app-DB.
 #
 #  This is the SECOND app-DB responsibility (the first is usage telemetry
-#  above): persisting ALL console settings — System config + custom providers +
+#  above): persisting all console settings and per-agent overrides.
 #  per-agent harness/model/reasoning/designation/role overrides — into the
 #  durable app-DB so they survive a server restart from an operational store
 #  (config/settings.local.json becomes a fallback/seed only). Agent harness/
@@ -970,8 +970,7 @@ class SettingsDB:
         Only non-NULL/non-empty override columns are included for each agent (so
         the shape matches the old JSON blob exactly). UNAVAILABLE when down.
         RESILIENT to missing additive columns: retries older SELECT shapes so a
-        not-yet-migrated app-DB never degrades the whole settings read (which
-        would hide every provider key)."""
+        not-yet-migrated app-DB never degrades the whole settings read."""
         conn = self._get_conn()
         if conn is None:
             return UNAVAILABLE

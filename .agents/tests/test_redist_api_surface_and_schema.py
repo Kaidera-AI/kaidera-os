@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -1285,138 +1286,18 @@ def test_startup_wizard_apply_is_idempotent_without_duplicate_agents(tmp_path):
     assert "runtime: docker" in (project_root / ".agents/config/runtime.yaml").read_text(
         encoding="utf-8"
     )
-    assert (project_root / "local-cortex/.env").stat().st_mode & 0o077 == 0
+    assert not (project_root / "local-cortex/.env").exists()
     assert ".env" in (project_root / "local-cortex/.gitignore").read_text(encoding="utf-8")
-    pending_text = (project_root / "local-cortex/KEYS_PENDING.md").read_text(encoding="utf-8")
-    assert "Provider Options" in pending_text
-    assert "OpenAI" in pending_text
+    assert not (project_root / "local-cortex/KEYS_PENDING.md").exists()
 
 
-def test_startup_wizard_provider_env_flow_writes_gitignored_env_without_leaking_pending(monkeypatch, tmp_path):
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    config = json.loads(
-        (ROOT / "redistributable/examples/blank.project.json").read_text(encoding="utf-8")
-    )
-    config["project"]["root"] = str(project_root)
-    config_path = tmp_path / "project.json"
-    write_json(config_path, config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
-
-    result = startup_wizard.main(
-        [
-            "--config",
-            str(config_path),
-            "--root",
-            str(project_root),
-            "--apply",
-            "--no-register",
-            "--keys-mode",
-            "env",
-            "--provider",
-            "openai",
-            "--no-validate-keys",
-        ]
-    )
-
-    assert result == 0
-    env_text = (project_root / "local-cortex/.env").read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY=sk-test-secret" in env_text
-    assert "CORTEX_MODEL_PROVIDER=openai" in env_text
-    pending_text = (project_root / "local-cortex/KEYS_PENDING.md").read_text(encoding="utf-8")
-    assert "key supplied" in pending_text
-    assert "sk-test-secret" not in pending_text
-
-
-def test_startup_wizard_redacts_sensitive_env_diff(monkeypatch, tmp_path, capsys):
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    config = json.loads(
-        (ROOT / "redistributable/examples/blank.project.json").read_text(encoding="utf-8")
-    )
-    config["project"]["root"] = str(project_root)
-    config_path = tmp_path / "project.json"
-    write_json(config_path, config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-diff-secret")
-
-    result = startup_wizard.main(
-        [
-            "--config",
-            str(config_path),
-            "--root",
-            str(project_root),
-            "--dry-run",
-            "--diff",
-            "--no-register",
-            "--keys-mode",
-            "env",
-            "--provider",
-            "openai",
-            "--no-validate-keys",
-        ]
-    )
-
-    assert result == 0
-    output = capsys.readouterr().out
-    assert "sensitive file redacted" in output
-    assert "sk-diff-secret" not in output
-
-
-def test_startup_wizard_provider_validation_uses_one_call(monkeypatch, tmp_path):
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    config = json.loads(
-        (ROOT / "redistributable/examples/blank.project.json").read_text(encoding="utf-8")
-    )
-    config["project"]["root"] = str(project_root)
-    config_path = tmp_path / "project.json"
-    write_json(config_path, config)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-validation-secret")
-    calls = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, *_args):
-            return b'{"data":[]}'
-
-    def fake_urlopen(request, timeout):
-        calls.append({"url": request.full_url, "headers": dict(request.header_items()), "timeout": timeout})
-        return FakeResponse()
-
-    monkeypatch.setattr(startup_wizard.urllib.request, "urlopen", fake_urlopen)
-
-    result = startup_wizard.main(
-        [
-            "--config",
-            str(config_path),
-            "--root",
-            str(project_root),
-            "--apply",
-            "--no-register",
-            "--keys-mode",
-            "env",
-            "--provider",
-            "openai",
-            "--validate-keys",
-        ]
-    )
-
-    assert result == 0
-    assert calls == [
-        {
-            "url": "https://api.openai.com/v1/models",
-            "headers": {"Accept": "application/json", "Authorization": "Bearer sk-validation-secret"},
-            "timeout": 10.0,
-        }
-    ]
-    pending_text = (project_root / "local-cortex/KEYS_PENDING.md").read_text(encoding="utf-8")
-    assert "validation `validated`" in pending_text
-    assert "sk-validation-secret" not in pending_text
+def test_startup_wizard_rejects_removed_provider_credential_options():
+    with pytest.raises(SystemExit):
+        startup_wizard.parse_args(["--provider", "openai"])
+    with pytest.raises(SystemExit):
+        startup_wizard.parse_args(["--keys-mode", "env"])
+    with pytest.raises(SystemExit):
+        startup_wizard.parse_args(["--validate-keys"])
 
 
 def test_startup_wizard_registers_project_via_typed_api(monkeypatch, tmp_path):

@@ -11,8 +11,9 @@ carrying a cross-harness model).
 
 The fix lives at the harness data layer:
   * `valid_model_for_harness(harness, model) -> bool` — is this model in that
-    harness's `HARNESS_MODELS` (fixed lanes) / is the harness a catalog lane (any
-    catalog model is allowed) / safe defaults for an unknown harness or blank model.
+    harness's `HARNESS_MODELS` (fixed lanes) / is the harness a dynamic CLI catalog
+    lane (any advertised model is allowed) / safe defaults for an unknown harness
+    or blank model.
   * `coerce_model(harness, model) -> str | None` — returns the model UNCHANGED when
     it's valid for the harness, else the harness's DEFAULT model (the first entry in
     that harness's `HARNESS_MODELS`); a catalog lane / unknown harness passes the
@@ -76,12 +77,8 @@ def test_valid_model_for_harness_accepts_operator_added_claude_models(monkeypatc
 
 
 def test_valid_model_for_harness_catalog_lane_allows_any_model():
-    """A CATALOG lane (kaidera/pi) has no fixed list — its models
-    come from the live Providers catalog — so ANY non-blank model is accepted (we
-    can't enumerate the catalog here, and over-coercing would wipe a valid catalog
-    pick)."""
-    assert h.valid_model_for_harness("kaidera", "anthropic/claude-opus") is True
-    assert h.valid_model_for_harness("kaidera", "openai/gpt-5.5") is True
+    """PI's dynamic CLI catalog has no complete release-time list, so any non-blank
+    model is accepted rather than coercing a valid newly advertised model."""
     assert h.valid_model_for_harness("pi", "fireworks/accounts/fireworks/models/kimi-k2p6") is True
 
 
@@ -93,7 +90,7 @@ def test_valid_model_for_harness_blank_model_is_valid():
     assert h.valid_model_for_harness("claude-code", "   ") is True
 
 
-def test_valid_model_for_harness_unknkaidera_is_permissive():
+def test_valid_model_for_harness_unknown_is_permissive():
     """An UNKNOWN harness (not one of the five, no fixed list) can't be validated
     against a list, so any model is accepted (we never guess a coercion target for a
     harness we don't model)."""

@@ -3,22 +3,17 @@
 Encodes the per-harness model + reasoning/effort maps and assembles the
 render-ready per-agent Configure view model:
 
-  * `harness ∈ {claude-code, codex, kaidera, pi}` selects an
-    execution lane (§4): subprocess (claude-code/codex/pi inherit
-    your subscription auth) or in-process API (kaidera calls provider APIs
-    with keys from System config).
+  * `harness ∈ {claude-code, codex, pi}` selects an external CLI execution
+    lane. Each harness owns its authentication outside Kaidera OS.
   * MODELS are per-harness:
       - claude-code → live CLI-advertised aliases + operator/fallback models
       - codex       → live Codex app-server catalog (curated fallback)
       - pi          → the host PI catalog (`pi --list-models`), grouped by provider
                        (OpenAI-Codex subscription plus any provider/API PI can see)
-      - kaidera → the live Providers & Models catalog (app.providers),
-        grouped by provider (this lane calls provider APIs directly).
   * REASONING/EFFORT is per-harness (§4 / §6):
       - claude-code {low, medium, high, xhigh, max}
       - codex       per-model (currently low through xhigh/max/ultra)
       - pi          per-model from `pi --list-models` + live `--thinking` choices
-      - kaidera     per-model from each connected provider's live catalog
 
   * The CURRENT EFFECTIVE config for an agent is the registry value (from the
     /projects/{key}/runtime `capabilities`: harness/provider, model /
@@ -33,9 +28,9 @@ Committing the config to the registry is the explicit "Promote to registry" acti
 `registry_sync.promote_agent_to_registry` (`POST /agents` UPSERT). This VIEW is
 read/shape-only (see app.registry_sync).
 
-Pure data + view-shaping: nothing here writes Cortex or any provider. The model
-dropdowns for kaidera pull from the Providers catalog; subscription harnesses
-pull from their host CLIs with curated lists used only as outage fallbacks.
+Pure data + view-shaping: nothing here writes Cortex or calls a model service.
+Harness catalogs come from their host CLIs, with curated lists used only as
+outage fallbacks.
 """
 
 from __future__ import annotations
@@ -43,15 +38,13 @@ from __future__ import annotations
 from typing import Any
 
 # ---------------------------------------------------------------------------
-#  Harness definitions — the four selectable harnesses + their lane.
+#  Harness definitions — external CLI lanes only.
 # ---------------------------------------------------------------------------
 #
-# Order is the product order: claude-code · codex · kaidera · pi.
-# `lane` is informational (subscription subprocess vs in-process API) and drives
-# a small badge in the UI. `model_source` is "fixed" (a per-harness static list),
-# "catalog" (the dynamic Providers & Models catalog), or a host-CLI catalog.
+# Order is the product order: claude-code · codex · pi.
+# `lane` is informational and `model_source` identifies the host-CLI catalog.
 
-HARNESS_ORDER = ["claude-code", "codex", "kaidera", "pi"]  # fitness:allow-literal canonical harness ids (the shipped lanes), not per-project literals
+HARNESS_ORDER = ["claude-code", "codex", "pi"]
 
 HARNESSES: dict[str, dict[str, Any]] = {
     "claude-code": {
@@ -66,12 +59,6 @@ HARNESSES: dict[str, dict[str, Any]] = {
         "lane_label": "subscription · subprocess",
         "model_source": "codex-catalog",
     },
-    "kaidera": {  # fitness:allow-literal canonical harness id (the own-harness lane), not a per-project literal
-        "label": "Kaidera AI",
-        "lane": "api",
-        "lane_label": "in-process · API keys",
-        "model_source": "catalog",
-    },
     "pi": {
         "label": "pi",
         # pi is operationally a SUBSCRIPTION subprocess lane, but its CLI also
@@ -85,8 +72,7 @@ HARNESSES: dict[str, dict[str, Any]] = {
 }
 
 # ---------------------------------------------------------------------------
-#  Per-harness MODEL sets (the "fixed" sources). kaidera uses the Providers
-#  catalog; pi uses the host PI catalog with this list as fallback/default.
+#  Per-harness MODEL sets. PI uses the host catalog with this list as fallback.
 # ---------------------------------------------------------------------------
 #
 # Each entry is {value, label}. Values are the model ids the harness's --model /
@@ -145,14 +131,12 @@ HARNESS_MODELS: dict[str, list[dict[str, Any]]] = {
 # ---------------------------------------------------------------------------
 #
 # claude-code {low,medium,high,xhigh,max}; codex uses model/list per-model levels;
-# kaidera/pi entries below are only outage fallbacks; live catalogs carry exact
-# per-model levels.
+# PI entries below are only outage fallbacks; live catalogs carry exact levels.
 
 HARNESS_REASONING: dict[str, list[str]] = {
     "claude-code": ["low", "medium", "high", "xhigh", "max"],
     # Union fallback only. The SPA uses each discovered model's exact ladder.
     "codex": ["low", "medium", "high", "xhigh", "max", "ultra"],
-    "kaidera": ["low", "medium", "high"],  # fitness:allow-literal canonical harness id (the own-harness lane), not a per-project literal
     # pi's `--thinking` levels, VERIFIED via `pi --help` / `pi --list-models` on
     # pi 0.80.3 (2026-07-10): off|minimal|low|medium|high|xhigh. (`minimal` maps
     # to `low` for openai-codex models; we still offer the full CLI level set.)
@@ -170,10 +154,6 @@ _HARNESS_ALIASES: dict[str, str] = {
     "openai-codex": "codex",
     "openai": "codex",
     "pi": "pi",
-    "kaidera": "kaidera",  # fitness:allow-literal canonical harness id alias map (own-harness lane), not per-project literals
-    "own-harness": "kaidera",  # legacy alias — agents stored before the rename still resolve to it  # fitness:allow-literal
-    "pydantic-ai": "kaidera",  # fitness:allow-literal canonical harness id alias
-    "pydanticai": "kaidera",  # fitness:allow-literal canonical harness id alias
 }
 
 
@@ -276,42 +256,18 @@ def harness_model_options(harness: str | None) -> list[dict[str, Any]]:
 # model) by coercing at the RESOLUTION layer — so a run never spawns an impossible
 # pair AND the UI never displays one.
 #
-# Dynamic lanes (kaidera, Codex, and PI) have
+# Dynamic Codex and PI lanes have
 # dynamic model lists, so we can't enumerate-validate here; any non-blank model is
 # accepted (over-coercing would wipe a valid catalog pick). An UNKNOWN harness (not
-# one of the four) likewise has no fixed list / default, so it's permissive (we never
+# one of the three) likewise has no fixed list / default, so it's permissive (we never
 # guess a coercion target for a harness we don't model). A blank model is "nothing to
 # coerce" — the routing layer fills the harness default itself.
 
 
-# Out-of-the-box default model for the kaidera lane — the model a new kaidera agent gets
-# with zero config (e.g. the seeded onboarding Lead). Per-DEPLOYMENT overridable via the
-# `HARNESS_OWN_DEFAULT_MODEL` env (harness_runner's runtime fallback reads the SAME knob) —
-# that is the "default we change + deploy per project" switch. The operator can also pick
-# any configured catalog model from the per-agent picker afterwards.
-OWN_HARNESS_DEFAULT_MODEL = "kaidera-manifold/ollama-cloud/minimax-m3"
-
-
 def harness_default_model(harness: str | None) -> str | None:
     """The DEFAULT model id for a harness — the FIRST entry in its fixed
-    `HARNESS_MODELS` list (the coercion target), or the kaidera out-of-the-box default.
-    None for the remaining catalog lane (pi) / an unknown harness (no list to default from)."""
+    `HARNESS_MODELS` list (the coercion target). None for an unknown harness."""
     canon = canonical_harness(harness)
-    if canon == "kaidera":  # fitness:allow-literal canonical harness id comparison (own-harness lane), not a per-project literal
-        # Operator's out-of-the-box default for the kaidera lane — the System setting
-        # `model_default` (read LIVE so a Settings change applies with no restart), else
-        # the built-in OWN_HARNESS_DEFAULT_MODEL. This only fills a NEW kaidera agent that
-        # declares no model; a per-agent pick always wins upstream. Lazy import (settings
-        # doesn't import harness → no cycle) + best-effort (a down app-DB → built-in).
-        try:
-            from app import settings as _settings
-
-            configured = str(_settings.load().get("model_default") or "").strip()
-            if configured:
-                return configured
-        except Exception:
-            pass
-        return OWN_HARNESS_DEFAULT_MODEL
     models = harness_model_options(canon)
     if models:
         if canon == "codex":
@@ -329,7 +285,7 @@ def valid_model_for_harness(harness: str | None, model: str | None) -> bool:
     list):
       * a blank/None model → True (nothing to validate; the default is filled later);
       * Claude → the model must be in its discovered/built-in/operator list;
-      * Codex/kaidera/PI → True for any non-blank model (dynamic list);
+      * Codex/PI → True for any non-blank model (dynamic list);
       * an UNKNOWN harness → True (no list to validate against — stay permissive).
     """
     m = (model or "").strip()
@@ -339,7 +295,7 @@ def valid_model_for_harness(harness: str | None, model: str | None) -> bool:
     spec = HARNESSES.get(canon or "")
     if spec is None:
         return True  # unknown harness — nothing to validate against
-    if spec.get("model_source") in ("catalog", "codex-catalog", "pi-catalog"):
+    if spec.get("model_source") in ("codex-catalog", "pi-catalog"):
         return True  # dynamic lane — the live catalog is the source, not a fixed list
     return any(opt["value"] == m for opt in harness_model_options(canon))
 
@@ -412,8 +368,7 @@ def attachment_capabilities(harness: str | None, model: str | None) -> dict[str,
 # ---------------------------------------------------------------------------
 #  Static JS map — harness → {models, reasoning} for the client-side dropdown
 #  re-population when the harness <select> changes (no round-trip for the
-#  fixed lanes; kaidera uses provider catalog groups; PI's SPA catalog is
-#  assembled in app.agents.service from the host PI catalog).
+#  fixed lanes; PI's SPA catalog is assembled from the host PI catalog.
 # ---------------------------------------------------------------------------
 
 def harness_js_map(
@@ -433,20 +388,15 @@ def harness_js_map(
                 "reasoning": ["low", ...],
              },
              ...,
-             "kaidera": {"model_source": "catalog", "models": [], "reasoning": [...]},  # fitness:allow-literal real harness key in the documented payload shape
              "pi": {"model_source": "pi-catalog", "models": [...], "reasoning": [...]},
           },
-          "catalog": [ {provider, label, models:[{value,label}]} ],  # for catalog lanes
           "pi_catalog": [ {provider, label, models:[{value,label}]} ],  # for pi lane
         }
-    `catalog_groups` is app.providers.view_catalog()['groups'] (each row has id +
-    display_name); we flatten to grouped {value,label} option lists. Only chat-
-    capable rows are offered (the API lanes drive chat models).
     `pi_catalog_groups` is the host PI `pi --list-models` catalog; when absent the
     pi harness falls back to its fixed HARNESS_MODELS list."""
     harnesses: dict[str, Any] = {}
     reasoning_by_model: dict[str, list[str]] = {}
-    for key in visible_harness_order():  # EDITION/LICENSE gate: only entitled harnesses
+    for key in visible_harness_order():
         spec = HARNESSES[key]
         models = harness_model_options(key)
         # pi-catalog: use live pi groups when available, else the fixed fallback.
@@ -479,32 +429,6 @@ def harness_js_map(
             "reasoning": HARNESS_REASONING.get(key, []),
         }
 
-    catalog: list[dict[str, Any]] = []
-    # B3: per-model reasoning {model_id: [levels]} for client-side repopulation of
-    # the reasoning dropdown when the kaidera model <select> changes.
-    for g in catalog_groups or []:
-        options: list[dict[str, Any]] = []
-        for row in g.get("rows", []):
-            if (row.get("type") or "chat") != "chat":
-                continue
-            rid = row["id"]
-            levels = list(row.get("reasoning_levels") or [])
-            options.append(
-                {"value": rid, "label": row.get("display_name") or rid,
-                 "reasoning_levels": levels}
-            )
-            reasoning_by_model[f"kaidera:{rid}"] = (
-                ["on"] if levels == ["supported"] else levels
-            )
-        if options:
-            catalog.append(
-                {
-                    "provider": g.get("provider"),
-                    "label": g.get("label") or g.get("provider"),
-                    "models": options,
-                }
-            )
-
     # pi_catalog: the live host PI model groups (provider-grouped, for the SPA).
     pi_catalog: list[dict[str, Any]] = []
     for g in pi_catalog_groups or []:
@@ -528,58 +452,15 @@ def harness_js_map(
 
     return {
         "harnesses": harnesses,
-        "catalog": catalog,
+        "catalog": [],
         "pi_catalog": pi_catalog,
-        "reasoning_by_model": reasoning_by_model,  # B3: per-model kaidera levels
+        "reasoning_by_model": reasoning_by_model,
     }
 
 
 # ---------------------------------------------------------------------------
 #  Per-agent Configure view model
 # ---------------------------------------------------------------------------
-
-def _catalog_model_groups(catalog_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Grouped {provider,label,models:[{value,label,reasoning_levels}]} option
-    lists for the provider catalog (the own-harness lane) model <select> — chat
-    models only. Each model carries its discovered `reasoning_levels` (B2/B3) so
-    the reasoning dropdown can show the SELECTED model's own levels."""
-    out: list[dict[str, Any]] = []
-    for g in catalog_groups or []:
-        options = [
-            {
-                "value": row["id"],
-                "label": row.get("display_name") or row["id"],
-                "reasoning_levels": list(row.get("reasoning_levels") or []),
-            }
-            for row in g.get("rows", [])
-            if (row.get("type") or "chat") == "chat"
-        ]
-        if options:
-            out.append(
-                {
-                    "provider": g.get("provider"),
-                    "label": g.get("label") or g.get("provider"),
-                    "models": options,
-                }
-            )
-    return out
-
-
-def _model_reasoning_levels(
-    model: str | None, grouped_models: list[dict[str, Any]] | None
-) -> list[str] | None:
-    """The reasoning levels for a specific catalog model id, found in the grouped
-    catalog options (B3). Returns the raw level list (possibly [] for a non-
-    reasoner, or ["supported"] for a toggle-only model), or None when the model
-    isn't in the catalog (caller then falls back to the per-harness list)."""
-    if not model or not grouped_models:
-        return None
-    for grp in grouped_models:
-        for opt in grp.get("models", []):
-            if opt.get("value") == model:
-                return list(opt.get("reasoning_levels") or [])
-    return None
-
 
 def _flat_model_reasoning_levels(
     model: str | None,
@@ -620,13 +501,11 @@ def _model_options_for(
     pi_catalog_groups: list[dict[str, Any]] | None = None,
 ):
     """Return (flat_models, grouped_models) for the model <select> given the
-    EFFECTIVE harness. Fixed lanes → (list, None); catalog lanes → ([], groups);
-    pi-catalog lanes → (live pi groups merged with the fixed fallback, None).
+    EFFECTIVE harness. Fixed lanes use their list; PI uses its live catalog with
+    a fixed fallback.
     An unknown harness gets an empty fixed list (the current value still shows)."""
     canon = canonical_harness(harness)
     spec = HARNESSES.get(canon or "")
-    if spec and spec["model_source"] == "catalog":
-        return [], _catalog_model_groups(catalog_groups)
     if spec and spec["model_source"] == "pi-catalog":
         pi_groups = pi_catalog_groups or []
         if pi_groups:
@@ -722,19 +601,11 @@ def agent_config_view(
     flat_models, grouped_models = _model_options_for(
         canon_harness, catalog_groups, pi_catalog_groups
     )
-    # REASONING (B3): for the kaidera catalog lane, the levels are the SELECTED
-    # MODEL's own discovered levels (per (provider, model)), not the fixed generic
-    # per-harness set. A model that doesn't reason → [] (the UI hides/disables the
-    # dropdown). Fall back to the per-harness list for fixed lanes, or when the
-    # catalog model isn't found.
+    # Dynamic CLI catalogs may expose model-specific reasoning levels.
     spec_for_reasoning = HARNESSES.get(canon_harness or "")
     model_source = spec_for_reasoning.get("model_source") if spec_for_reasoning else ""
-    if model_source in {"catalog", "claude-catalog", "codex-catalog", "pi-catalog"}:
-        per_model = (
-            _model_reasoning_levels(eff_model, grouped_models)
-            if model_source == "catalog"
-            else _flat_model_reasoning_levels(eff_model, flat_models)
-        )
+    if model_source in {"claude-catalog", "codex-catalog", "pi-catalog"}:
+        per_model = _flat_model_reasoning_levels(eff_model, flat_models)
         if per_model is not None:
             # ["supported"] (toggle-only) → a single "on" option for the UI.
             reasoning_levels = ["on"] if per_model == ["supported"] else per_model
@@ -802,18 +673,10 @@ def agent_config_view(
 
 
 def visible_harness_order() -> list[str]:
-    """HARNESS_ORDER filtered to the harnesses ENTITLED for this edition. DEV -> all;
-    PUBLIC -> kaidera (always free) + every harness the license grants. The single seam
-    the picker surfaces iterate, so a locked harness is never offered without a license.
-    The runtime backstop in main._chat_routing_for is the matching teeth for overrides."""
-    try:
-        from app import license as _license
-        ent = _license.entitlements()
-        return [k for k in HARNESS_ORDER if ent.has_harness(k)]
-    except Exception:
-        return list(HARNESS_ORDER)
+    """Return every external harness shipped by the community edition."""
+    return list(HARNESS_ORDER)
 
 
 def harness_options() -> list[dict[str, str]]:
-    """The harness <select> options (value + label), in the spec order, edition-gated."""
+    """The harness <select> options (value + label), in product order."""
     return [{"value": k, "label": HARNESSES[k]["label"]} for k in visible_harness_order()]

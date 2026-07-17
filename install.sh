@@ -3,9 +3,9 @@
 #
 # After this runs, the app is self-contained: a native console (uvicorn) on this host +
 # the Cortex 6-layer + app-DB in containers. Works on macOS or a fresh Linux VM with no
-# Mac-host dependency - the kaidera harness calls provider APIs directly with keys you
-# enter in Settings. Herdr is installed as an external runtime prerequisite; it is
-# not bundled in this repository or redistributable package.
+# Mac-host dependency. AI execution uses separately installed Claude Code, Codex,
+# or PI command-line harnesses. Herdr is an optional external runtime and is not
+# bundled in this repository.
 # Design: docs/2026-06-13-selfcontained-redesign-plan.md
 set -euo pipefail
 
@@ -84,9 +84,7 @@ APPDB_DSN="${HARNESS_APPDB_DSN:-postgresql://harness:harness@localhost:5500/harn
 # Cortex + app-DB services only — the console runs NATIVE, so it is NOT in this list.
 CORTEX_SERVICES=(cortex-pg cortex-api harness-appdb harness-appdb-migrate \
                  cortex-graph-worker cortex-pdf-worker)
-# Provider-backed embeddings are the default path. The local sentence-transformer
-# embed worker is a heavyweight fallback because it builds PyTorch; keep it
-# opt-in so ordinary installs/updates do not export that large image.
+# The local sentence-transformer worker is optional because it builds PyTorch.
 CORTEX_LOCAL_EMBED="${KAIDERA_CORTEX_LOCAL_EMBED:-}"
 case "$(printf '%s' "$CORTEX_LOCAL_EMBED" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) CORTEX_LOCAL_EMBED="1" ;;
@@ -136,28 +134,6 @@ case "$(printf '%s' "$AUTH_ENABLED" | tr '[:upper:]' '[:lower:]')" in
   0|false|no|off) AUTH_ENABLED="0" ;;
   *) AUTH_ENABLED="1" ;;
 esac
-EDITION="${KAIDERA_OS_EDITION:-}"
-EDITION_SOURCE="environment"
-if [ -z "$EDITION" ]; then
-  EDITION_MARKER="$REPO_ROOT/.kaidera-os-edition"
-  if [ -f "$EDITION_MARKER" ]; then
-    EDITION="$(tr -d '[:space:]' < "$EDITION_MARKER")"
-    EDITION_SOURCE="release marker"
-  elif [ -d "$REPO_ROOT/.git" ]; then
-    EDITION="dev"
-    EDITION_SOURCE="source checkout"
-  else
-    # An unpackaged, non-source tree must fail toward the redistributable posture.
-    EDITION="public"
-    EDITION_SOURCE="unmarked archive"
-  fi
-fi
-case "$(printf '%s' "$EDITION" | tr '[:upper:]' '[:lower:]')" in
-  public) EDITION="public" ;;
-  dev) EDITION="dev" ;;
-  "") die "Kaidera OS edition marker is empty (expected public or dev)" ;;
-  *) die "Invalid KAIDERA_OS_EDITION='$EDITION' (expected public or dev)" ;;
-esac
 command -v docker >/dev/null 2>&1 || die "Docker not found — install Docker Engine (Linux) / Docker Desktop (macOS) first."
 docker compose version >/dev/null 2>&1 || die "'docker compose' v2 plugin not found."
 docker info >/dev/null 2>&1 || die "Docker daemon not running — start it and re-run."
@@ -182,15 +158,13 @@ if [ "$AUTH_ENABLED" = "0" ]; then
 else
   ok "auth enabled (set KAIDERA_AUTH_ENABLED=0 only for private/local installs)"
 fi
-ok "edition: $EDITION ($EDITION_SOURCE)"
-# Disk preflight. The default provider-backed stack is intentionally lighter
-# because it no longer builds the PyTorch-based local embed worker. Warn loudly
+# Disk preflight. Warn loudly
 # when operators opt into local embed/full multimodal mode because those images
 # can fail HALFWAY on small disks (Errno 28). Non-fatal: df parsing varies and
 # small DB/API deploys are valid.
 FREE_GB="$(df -k / 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}')"
 if [ -n "$FREE_GB" ] && [ "$CORTEX_LOCAL_EMBED" = "1" ] && [ "$FREE_GB" -lt 15 ]; then
-  printf '\033[1;33m  ⚠ only %s GB free on / - local embedding/full multimodal mode needs ~15 GB+ headroom.\n     Resize the disk, or run the default provider-backed stack without KAIDERA_CORTEX_LOCAL_EMBED / KAIDERA_CORTEX_PROFILE=full.\033[0m\n' \
+  printf '\033[1;33m  ⚠ only %s GB free on / - local embedding/full multimodal mode needs ~15 GB+ headroom.\n     Resize the disk, or run without KAIDERA_CORTEX_LOCAL_EMBED / KAIDERA_CORTEX_PROFILE=full.\033[0m\n' \
     "$FREE_GB"
 elif [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt 5 ]; then
   printf '\033[1;33m  ⚠ only %s GB free on / — even the default lightweight stack may run out of disk during image pulls/builds.\033[0m\n' "$FREE_GB"
@@ -202,13 +176,18 @@ PY="$(command -v python3 || true)"
 "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
   || die "Python 3.11+ required (found $("$PY" --version 2>&1)). Install a newer python3 and re-run."
 ok "python3: $("$PY" --version 2>&1)"
-if command -v claude >/dev/null 2>&1; then
-  ok "claude-code CLI present — the Claude-subscription harness is available"
-else
-  skip "claude-code CLI not found - only needed for the Claude subscription; the kaidera API-key harness works regardless"
-fi
+_HARNESS_COUNT=0
+for _harness in claude codex pi; do
+  if command -v "$_harness" >/dev/null 2>&1; then
+    ok "$_harness CLI present"
+    _HARNESS_COUNT=$((_HARNESS_COUNT + 1))
+  else
+    skip "$_harness CLI not found - install it separately to use that harness"
+  fi
+done
+[ "$_HARNESS_COUNT" -gt 0 ] || skip "no AI CLI harness detected - the app will install, but AI workers remain unavailable until Claude Code, Codex, or PI is installed"
 # Herdr is the OPTIONAL "herdr-visible" runtime backend (a prototype for visible, pane-based
-# execution). The console + the DEFAULT kaidera harness (provider APIs) work fully WITHOUT it, so a
+# execution). The console works without it, so a
 # missing/unpinned Herdr must NOT block the install — best-effort, warn + continue. (Enable later:
 # install Herdr + set KAIDERA_OS_HERDR_BIN; it auto-installs here only if HERDR_INSTALL_SHA256 is set.)
 HERDR_BIN=""
@@ -218,21 +197,21 @@ fi
 if [ -n "$HERDR_BIN" ]; then
   ok "Herdr runtime backend (optional): $HERDR_BIN"
 else
-  skip "Herdr runtime backend not installed - OPTIONAL (only the 'herdr-visible' execution mode needs it). The console + kaidera/claude harnesses work without it."
+  skip "Herdr runtime backend not installed - optional; only the 'herdr-visible' execution mode needs it"
 fi
 
 # --- 2. Cortex + app-DB containers --------------------------------------------------------
 say "2/7 Cortex + app-DB containers"
 [ -f "$CORTEX_COMPOSE" ] || die "compose file not found: $CORTEX_COMPOSE"
-# local-cortex/.env carries operator-local config the compose loads via env_file. Provider
-# keys go in Settings (the app-DB), NOT here — BUT the Cortex ADMIN token is the one secret
+# local-cortex/.env carries operator-local config the compose loads via env_file. The
+# Cortex admin token is the one secret
 # that MUST be provisioned at install time: cortex-api fails CLOSED without it (no project can
 # be created), and the native console must send the SAME value. Generate a strong token ONCE,
 # persist it here (cortex-api reads it via env_file on the up below), and reuse it for the
 # console's systemd unit + runner so both sides of the wire agree. Idempotent on re-run; a
 # weak/well-known 'cortex-local-admin' is treated as unset and rotated.
 ENV_LOCAL="$REPO_ROOT/local-cortex/.env"
-[ -f "$ENV_LOCAL" ] || { : > "$ENV_LOCAL"; ok "created local-cortex/.env (provider keys go in Settings, not here)"; }
+[ -f "$ENV_LOCAL" ] || { : > "$ENV_LOCAL"; ok "created local-cortex/.env"; }
 # `|| true` is LOAD-BEARING: an empty / token-less .env (the post-wipe greenfield state) makes grep exit
 # 1, which under `set -euo pipefail` would kill the install SILENTLY right here — before the regenerate
 # below ever runs. Swallow the no-match so an absent token falls through to the `[ -z ]` regenerate.
@@ -333,7 +312,7 @@ ok "started ${#CORTEX_SERVICES[@]} services (project: $COMPOSE_PROJECT) — cons
 if [ "$CORTEX_LOCAL_EMBED" = "1" ]; then
   ok "local embed worker enabled (KAIDERA_CORTEX_LOCAL_EMBED=1 or KAIDERA_CORTEX_PROFILE=full)"
 else
-  skip "local embed worker OFF - provider-backed Cortex embeddings stay active; re-run with KAIDERA_CORTEX_LOCAL_EMBED=1 ./install.sh for the local sentence-transformer fallback"
+  skip "local embed worker OFF - re-run with KAIDERA_CORTEX_LOCAL_EMBED=1 ./install.sh to enable local semantic indexing"
 fi
 if [ "$CORTEX_PROFILE" = "full" ]; then
   ok "multimodal L5: audio + vision workers started (KAIDERA_CORTEX_PROFILE=full)"
@@ -519,15 +498,6 @@ done
 if [ "$_extension_set_count" -gt 0 ]; then
   ok "project-pack extensions wired into the runner + unit ($_extension_set_count var(s))"
 fi
-EDITION_RUNNER_LINE=""
-EDITION_UNIT_LINE=""
-if [ -n "$EDITION" ]; then
-  EDITION_RUNNER_LINE="         KAIDERA_OS_EDITION=\"$EDITION\" \\
-"
-  EDITION_UNIT_LINE="Environment=KAIDERA_OS_EDITION=$EDITION
-"
-fi
-
 RUNNER="$REPO_ROOT/run-kaidera-os-console.sh"
 cat > "$RUNNER" <<EOF
 #!/usr/bin/env bash
@@ -556,7 +526,7 @@ if lsof -ti tcp:"\$_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 exec env KAIDERA_DEPLOY_MODE=selfcontained \\
          KAIDERA_AUTH_ENABLED="$AUTH_ENABLED" \\
-${EDITION_RUNNER_LINE}         PATH="\$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \\
+         PATH="\$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \\
          CORTEX_API_URL="$CORTEX_API_URL" \\
          KAIDERA_OS_HERDR_BIN="$HERDR_BIN" \\
          HARNESS_APPDB_DSN="$APPDB_DSN" \\
@@ -569,29 +539,6 @@ ${AUTH_EMAIL_RUNNER_LINES}${AUTH_DEPLOY_RUNNER_LINES}${EXTENSION_RUNNER_LINES}  
 EOF
 chmod +x "$RUNNER"
 ok "run script: $RUNNER"
-# Persist the install root for packaged native shells. A dragged-to-Applications
-# menu-bar app cannot derive the source checkout path from __file__, so it reads
-# this non-secret pointer (or KAIDERA_OS_HOME) before falling back to source paths.
-OPERATOR_CONFIG_DIR="$HOME/.kaidera-os"
-OPERATOR_CONFIG="$OPERATOR_CONFIG_DIR/operator.json"
-mkdir -p "$OPERATOR_CONFIG_DIR" 2>/dev/null || true
-if command -v python3 >/dev/null 2>&1; then
-  python3 - "$REPO_ROOT" "$OPERATOR_CONFIG" <<'PY' || true
-import json
-import sys
-from pathlib import Path
-
-repo_root = str(Path(sys.argv[1]).resolve())
-path = Path(sys.argv[2])
-path.parent.mkdir(parents=True, exist_ok=True)
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(json.dumps({"repo_root": repo_root}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-tmp.replace(path)
-PY
-  ok "native operator install root recorded in $OPERATOR_CONFIG"
-else
-  skip "python3 unavailable for operator root config - set KAIDERA_OS_HOME=$REPO_ROOT before launching the native operator"
-fi
 # Loud warning when the operator opted into network exposure.
 case "$CONSOLE_HOST" in
   127.0.0.1|localhost|::1) ;;
@@ -621,7 +568,7 @@ User=$(id -un)
 WorkingDirectory=$CONSOLE_DIR
 Environment=KAIDERA_DEPLOY_MODE=selfcontained
 Environment=KAIDERA_AUTH_ENABLED=$AUTH_ENABLED
-${EDITION_UNIT_LINE}Environment=CORTEX_API_URL=$CORTEX_API_URL
+Environment=CORTEX_API_URL=$CORTEX_API_URL
 Environment=HARNESS_APPDB_DSN=$APPDB_DSN
 Environment=KAIDERA_OS_HERDR_BIN=$HERDR_BIN
 Environment=KAIDERA_AUTH_SECRET=$AUTH_SECRET
@@ -932,7 +879,7 @@ fi
 cat <<EOF
 
   The console is running as a background service (auto-starts on boot).
-$( [ "$OS" = "Darwin" ] && echo "  Manage it:  $CONSOLE_DIR/scripts/kaidera-os operator status|restart|stop|start" )
+$( [ "$OS" = "Darwin" ] && echo "  Manage it:  $CONSOLE_DIR/scripts/kaidera-os status|restart|stop|start" )
 $( [ "$OS" = "Darwin" ] && echo "  Logs:       tail -f $REPO_ROOT/local-cortex/logs/kaidera-os-console.launchd.err.log" )
 $( [ "$OS" != "Darwin" ] && echo "  Manage it:  systemctl status|restart|stop kaidera-os-console   ·   logs: journalctl -u kaidera-os-console -f" )
   (or run it in the foreground for debugging: $RUNNER)
@@ -945,13 +892,13 @@ $( [ "$CONSOLE_HOST" = "0.0.0.0" ] && echo "    ⚠ enable KAIDERA_AUTH_ENABLED=
 
 ${_AUTH_HINT}
 
-  FIRST RUN — open Settings → Providers and add at least ONE provider API key
-  (e.g. Ollama Cloud for kimi, or OpenAI / Anthropic). The default 'kaidera' harness
-  needs no CLI: it calls providers directly with the key you store in Settings.
+  AI WORKERS — install and sign in to at least one supported external harness:
+  Claude Code, Codex, or PI. Kaidera OS discovers each installed harness's models
+  and effort levels dynamically.
 
   Cortex CLI: open a new shell (or \`source $PROFILE_D\`), then \`cortex-boot <name>\`.
   Herdr runtime: $HERDR_BIN
-  Local embedding fallback: re-run with \`KAIDERA_CORTEX_LOCAL_EMBED=1 ./install.sh\` to start the PyTorch sentence-transformer worker.
+  Local semantic indexing: re-run with \`KAIDERA_CORTEX_LOCAL_EMBED=1 ./install.sh\` to start the PyTorch sentence-transformer worker.
   Multimodal audio/vision (L5): re-run with \`KAIDERA_CORTEX_PROFILE=full ./install.sh\` (also starts local embed; vision pulls an ~8 GB model).
   Clean wipe for a fresh re-deploy: \`./uninstall.sh\`.
 

@@ -4,7 +4,7 @@
  * The single home for PROJECT settings (the no-repeat rule keeps it out of every
  * column). A glass sub-nav mirrors the legacy console's tab shell:
  *
- *   System · Providers · Workspace · Extensions · Cortex
+ *   System · Workspace · Extensions · Cortex
  *
  * NOTE: per-agent configuration (harness / model / reasoning / designation / role) is
  * NO LONGER here — it MOVED into the agent-detail middle pane (`AgentConfigEditor`,
@@ -13,21 +13,11 @@
  * retains only the PROJECT/global config below (no per-agent duplication).
  *
  *   • System — a TYPED form driven by GET /settings/{p}/system-schema of the
- *     NON-provider settings (Cortex-connection, harness paths/flags, app
+ *     Cortex connection, harness paths/flags, and app
  *     preferences): text / number inputs, bool → toggle switch, SECRET → a masked
  *     field with a Replace/Hide affordance (the stored secret is NEVER rendered),
  *     readonly → static. Save POSTs ONLY changed keys to POST .../app. The raw
- *     App-settings key→value editor is folded in below (still editable) — it
- *     EXCLUDES provider keys (filtered server-side). PROVIDER KEYS ARE NO LONGER
- *     HERE — they moved to the Providers control surface (canonicalization).
- *   • Providers — the ONE control surface for provider keys/config. (a) The
- *     CONFIGURED/ACTIVE providers (GET .../providers/config): which providers have a
- *     key set (per-provider status) + a per-provider Test button (POST
- *     .../provider-key-test) + an "Add key" affordance for a preconfigured provider
- *     (→ POST .../app, the canonical secret write). (b) An Add affordance for a
- *     CUSTOM provider (name + base URL + key → POST .../custom-providers). (c) The
- *     Models catalog (GET .../providers): collapsible per-provider cards, a table
- *     per provider (model · type · reasoning tiers · in/out price · context · source).
+ *     App-settings key→value editor is folded in below (still editable).
  *   • Workspace — per-project repo_root editor → POST .../workspace; shows
  *     `previous → new` on success, the error string otherwise.
  *   • Extensions — installed project-pack modules, pack-local enable/disable helper, and
@@ -40,13 +30,11 @@
  *
  * Read data flows in as props (the shell fetches + polls them); writes go through the
  * injected `client`. On a successful write the view calls `onSaved` (the shell's
- * refetch) — REFETCH-ON-SUCCESS, the simplest correct sync. Custom-provider writes
- * additionally carry the refreshed masked list in their reply, so that panel re-
- * renders from the authoritative server state directly. Graceful-degrade rides
+ * refetch) — REFETCH-ON-SUCCESS, the simplest correct sync. Graceful-degrade rides
  * through everywhere — a down store / a stale-backend 404 yields a hint, never a crash.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { GlassPanel, GlassCard, StatusDot } from '../components/glass'
 import { cx } from '../components/ui'
@@ -58,21 +46,12 @@ import type {
   CortexEmbeddingBacklogResult,
   CortexConfigResult,
   CortexPlatformConfig,
-  CustomProviderResult,
-  BillingStatus,
-  KeyTestResult,
-  LicenseStatus,
-  LicenseLoginRequest,
-  LicenseTransportResult,
   Project,
   ProjectPackExtension,
   ProjectPackExtensionResult,
   ProjectPackListResult,
   ProjectPackOption,
   ProjectPackPortal,
-  ProviderConfigRow,
-  ProvidersCatalog,
-  ProvidersConfig,
   RunStateRestartStatus,
   SystemField,
   SystemSchema,
@@ -88,15 +67,6 @@ export interface SettingsWriteClient {
   // -- step 3b writes --------------------------------------------------------
   /** Upsert a batch of app/system settings (the typed System form's "save changed keys"). */
   setAppSettings?: (project: string, settings: Record<string, unknown>) => Promise<AppSettingsWriteResult>
-  addCustomProvider: (
-    project: string,
-    body: { name: string; base_url: string; api_key: string },
-  ) => Promise<CustomProviderResult>
-  deleteCustomProvider: (project: string, id: string) => Promise<CustomProviderResult>
-  providerKeyTest: (
-    project: string,
-    body: { provider: string; key?: string; use_stored?: boolean },
-  ) => Promise<KeyTestResult>
   setWorkspace: (
     project: string,
     body: { repo_root: string; project_key?: string },
@@ -124,588 +94,21 @@ export interface SettingsWriteClient {
     project: string,
     signal?: AbortSignal,
   ) => Promise<RunStateRestartStatus>
-  /** GET /settings/{project}/license — the license posture for the License tab. */
-  license?: (project: string, signal?: AbortSignal) => Promise<LicenseStatus>
-  /** POST /settings/{project}/license/login — activate via Kaidera AI console credentials. */
-  licenseLogin?: (project: string, request: LicenseLoginRequest, signal?: AbortSignal) => Promise<LicenseTransportResult>
-  /** POST /settings/{project}/license/activate — exchange a platform login token for a local grant. */
-  licenseActivate?: (project: string, orgLoginToken: string, signal?: AbortSignal) => Promise<LicenseTransportResult>
-  /** POST /settings/{project}/license/heartbeat — refresh the local online grant now. */
-  licenseHeartbeat?: (project: string, signal?: AbortSignal) => Promise<LicenseTransportResult>
-  /** POST /settings/{project}/license/restore — restore an expired/disabled customer license. */
-  licenseRestore?: (project: string, signal?: AbortSignal) => Promise<LicenseTransportResult>
-  /** GET /settings/{project}/billing — entitlement usage + wallet for the Billing tab. */
-  billing?: (project: string, signal?: AbortSignal) => Promise<BillingStatus>
 }
 
-function LicenseStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-glass-line bg-base-950/40 px-2.5 py-1.5">
-      <div className="text-[9px] font-semibold uppercase tracking-wide text-ink-500">{label}</div>
-      <div className="mt-0.5 truncate text-xs text-ink-200" title={value}>
-        {value || '—'}
-      </div>
-    </div>
-  )
-}
-
-function transportMessage(result: LicenseTransportResult | null) {
-  if (!result) return null
-  const action =
-    result.action === 'login'
-      ? 'Login'
-      : result.action === 'activate'
-        ? 'Activation'
-        : result.action === 'restore'
-          ? 'Restore'
-          : result.action === 'enable'
-            ? 'Enable'
-            : result.action === 'expire'
-              ? 'Expire'
-              : 'Refresh'
-  if (result.ok) {
-    const release = result.latest_release?.version ? ` Latest release: ${String(result.latest_release.version)}.` : ''
-    const manifold =
-      result.manifold_key_stored && result.manifold_project_id_stored
-        ? ' Manifold ready.'
-        : result.manifold_enabled
-          ? ' Manifold access is granted, but platform credentials are unavailable.'
-          : ''
-    return `${action} complete.${result.stored ? ' Grant stored.' : ''}${manifold}${release}`
-  }
-  return `${action} failed: ${result.error || 'platform unavailable'}.`
-}
-
-/** Settings -> License. Password login stores only the narrow platform license session;
- * manual signed-grant import remains available for offline installs. */
-function LicenseTab({ project, client }: { project: string; client: SettingsWriteClient }) {
-  const [status, setStatus] = useState<LicenseStatus | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [token, setToken] = useState('')
-  const [platformToken, setPlatformToken] = useState('')
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
-  const [loginMfa, setLoginMfa] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [platformBusy, setPlatformBusy] = useState<'login' | 'activate' | 'heartbeat' | 'restore' | null>(null)
-  const [platformResult, setPlatformResult] = useState<LicenseTransportResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-
-  const refresh = useCallback(async () => {
-    if (!client.license) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    try {
-      setStatus(await client.license(project))
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [client, project])
-
-  useEffect(() => {
-    let cancelled = false
-    const request = client.license
-    if (!request) {
-      Promise.resolve().then(() => {
-        if (!cancelled) setLoading(false)
-      })
-      return () => {
-        cancelled = true
-      }
-    }
-    request(project)
-      .then((next) => {
-        if (!cancelled) {
-          setStatus(next)
-          setError(null)
-        }
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(String(e))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [client, project])
-
-  const apply = useCallback(async () => {
-    const t = token.trim()
-    if (!t) return
-    setSaving(true)
-    setError(null)
-    setSaved(false)
-    try {
-      const res = await client.setAppSetting(project, 'license_key', t)
-      if (res && res.ok === false) {
-        setError('Could not store the license (settings store unavailable).')
-        return
-      }
-      setToken('')
-      setSaved(true)
-      await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }, [client, project, token, refresh])
-
-  const activateOnline = useCallback(async () => {
-    const t = platformToken.trim()
-    if (!t || !client.licenseActivate) return
-    setPlatformBusy('activate')
-    setPlatformResult(null)
-    setError(null)
-    setSaved(false)
-    try {
-      const res = await client.licenseActivate(project, t)
-      setPlatformResult(res)
-      if (res.ok) setPlatformToken('')
-      await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setPlatformBusy(null)
-    }
-  }, [client, project, platformToken, refresh])
-
-  const loginOnline = useCallback(async () => {
-    if (!client.licenseLogin || !loginEmail.trim() || !loginPassword) return
-    setPlatformBusy('login')
-    setPlatformResult(null)
-    setError(null)
-    setSaved(false)
-    try {
-      const res = await client.licenseLogin(project, {
-        email: loginEmail.trim(),
-        password: loginPassword,
-        ...(loginMfa.trim() ? { mfa_code: loginMfa.trim() } : {}),
-      })
-      setPlatformResult(res)
-      if (res.ok) {
-        setLoginPassword('')
-        setLoginMfa('')
-      }
-      await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setPlatformBusy(null)
-    }
-  }, [client, project, loginEmail, loginPassword, loginMfa, refresh])
-
-  const heartbeatNow = useCallback(async () => {
-    if (!client.licenseHeartbeat) return
-    setPlatformBusy('heartbeat')
-    setPlatformResult(null)
-    setError(null)
-    setSaved(false)
-    try {
-      const res = await client.licenseHeartbeat(project)
-      setPlatformResult(res)
-      await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setPlatformBusy(null)
-    }
-  }, [client, project, refresh])
-
-  const restoreNow = useCallback(async () => {
-    if (!client.licenseRestore) return
-    setPlatformBusy('restore')
-    setPlatformResult(null)
-    setError(null)
-    setSaved(false)
-    try {
-      const res = await client.licenseRestore(project)
-      setPlatformResult(res)
-      await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setPlatformBusy(null)
-    }
-  }, [client, project, refresh])
-
-  const isDev = status?.edition === 'dev'
-  const cap = (n: number | null) => (n === null ? 'unlimited' : String(n))
-  const platformMsg = transportMessage(platformResult)
-
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className={SECTION_LABEL}>License</h2>
-        {status && (
-          <span
-            className={cx(
-              'rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-              isDev
-                ? 'bg-base-700/60 text-ink-400'
-                : status.valid
-                  ? 'bg-mint-500/15 text-mint-300'
-                  : 'bg-run-errored/12 text-run-errored/90',
-            )}
-          >
-            {status.edition} edition
-          </span>
-        )}
-      </div>
-
-      {loading ? (
-        <p className="px-1 py-2 text-xs text-ink-500">Loading license…</p>
-      ) : !client.license ? (
-        <p className="px-1 py-2 text-xs text-ink-500">This console build doesn't expose license status.</p>
-      ) : !status ? (
-        <p className="px-1 py-2 text-xs text-run-errored/90">Couldn't load license status. {error}</p>
-      ) : (
-        <>
-          <GlassCard className="space-y-2 p-4 text-xs">
-            {isDev ? (
-              <p className="leading-relaxed text-ink-300">
-                This is the <b>dev</b> edition — fully unrestricted (all providers and harnesses,
-                unlimited projects/teams/workers). No license required.
-              </p>
-            ) : status.valid ? (
-              <p className="leading-relaxed text-mint-300">
-                Licensed to <b>{status.customer}</b>
-                {status.expires ? <> · expires {new Date(status.expires * 1000).toLocaleDateString()}</> : null}.
-                {status.in_grace ? <> This grant is in grace period; renew soon.</> : null}
-              </p>
-            ) : (
-              <p className="leading-relaxed text-ink-300">
-                Free tier — {status.reason}. Log in with Kaidera AI below to restore licensed capacity.
-              </p>
-            )}
-            {!isDev && status.hard_gate && (
-              <div
-                className={cx(
-                  'rounded-md border px-3 py-2 text-[11px] leading-relaxed',
-                  status.hard_gate.enabled && !status.hard_gate.allowed
-                    ? 'border-run-errored/30 bg-run-errored/10 text-run-errored/90'
-                    : status.hard_gate.enabled
-                      ? 'border-mint-400/25 bg-mint-500/10 text-mint-200'
-                      : 'border-glass-line bg-base-900/50 text-ink-400',
-                )}
-              >
-                Hard gate: <b>{status.hard_gate.enabled ? status.hard_gate.state : 'off'}</b>
-                {' '}({status.hard_gate.reason}). License, backup/export, and support remain reachable if gating is enabled.
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-2 pt-1 sm:grid-cols-5">
-              <LicenseStat label="Harnesses" value={status.all_harnesses ? 'all' : status.harnesses.join(', ')} />
-              <LicenseStat label="Projects" value={cap(status.limits.projects)} />
-              <LicenseStat label="Teams" value={cap(status.limits.teams)} />
-              <LicenseStat label="Workers" value={cap(status.limits.workers)} />
-              <LicenseStat label="Users" value={cap(status.limits.users)} />
-            </div>
-            <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
-              <LicenseStat label="Manifold" value={status.advanced?.manifold_access ? 'enabled' : 'off'} />
-            </div>
-          </GlassCard>
-
-          {!isDev && (
-            <GlassCard className="space-y-2 p-4">
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-                Apply a license token
-              </label>
-              <textarea
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                rows={3}
-                spellCheck={false}
-                placeholder="Paste your Kaidera OS license token…"
-                className="w-full rounded-md border border-glass-line bg-base-950/70 px-3 py-2 font-mono text-[11px] text-ink-100 outline-none focus:border-mint-400/60"
-              />
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => void apply()}
-                  disabled={saving || !token.trim()}
-                  className="rounded-md bg-mint-500/15 px-3 py-1.5 text-xs font-medium text-mint-200 ring-1 ring-mint-400/35 disabled:opacity-50"
-                >
-                  {saving ? 'Applying…' : 'Apply license'}
-                </button>
-                {saved && <span className="text-[11px] font-medium text-mint-300">Applied ✓</span>}
-                {error && <span className="text-[11px] text-run-errored/90">{error}</span>}
-              </div>
-              <p className="text-[10px] leading-relaxed text-ink-500">
-                Providers are fixed to Kaidera AI Manifold in this edition and are not changed by a license.
-              </p>
-            </GlassCard>
-          )}
-
-          {!isDev && (client.licenseLogin || client.licenseActivate || client.licenseHeartbeat || client.licenseRestore) && (
-            <GlassCard className="space-y-2 p-4">
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-                Kaidera AI license login
-              </label>
-              <p className="text-[10px] leading-relaxed text-ink-500">
-                Use your Kaidera AI console credentials to activate this install, refresh the current grant, or restore access.
-              </p>
-              {client.licenseLogin ? (
-                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem]">
-                  <input
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    type="email"
-                    autoComplete="username"
-                    placeholder="email"
-                    aria-label="Kaidera AI email"
-                    className={FIELD_CLASS}
-                  />
-                  <input
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    type="password"
-                    autoComplete="current-password"
-                    placeholder="password"
-                    aria-label="Kaidera AI password"
-                    className={FIELD_CLASS}
-                  />
-                  <input
-                    value={loginMfa}
-                    onChange={(e) => setLoginMfa(e.target.value)}
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    placeholder="MFA"
-                    aria-label="Kaidera AI MFA code"
-                    className={FIELD_CLASS}
-                  />
-                </div>
-              ) : client.licenseActivate ? (
-                <textarea
-                  value={platformToken}
-                  onChange={(e) => setPlatformToken(e.target.value)}
-                  rows={2}
-                  spellCheck={false}
-                  placeholder="Paste Kaidera AI org login token…"
-                  className="w-full rounded-md border border-glass-line bg-base-950/70 px-3 py-2 font-mono text-[11px] text-ink-100 outline-none focus:border-mint-400/60"
-                />
-              ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                {client.licenseLogin && (
-                  <button
-                    type="button"
-                    onClick={() => void loginOnline()}
-                    disabled={platformBusy !== null || !loginEmail.trim() || !loginPassword}
-                    className="rounded-md bg-sky-500/15 px-3 py-1.5 text-xs font-medium text-sky-200 ring-1 ring-sky-400/35 disabled:opacity-50"
-                  >
-                    {platformBusy === 'login' ? 'Logging in…' : 'Log in & activate'}
-                  </button>
-                )}
-                {!client.licenseLogin && client.licenseActivate && (
-                  <button
-                    type="button"
-                    onClick={() => void activateOnline()}
-                    disabled={platformBusy !== null || !platformToken.trim()}
-                    className="rounded-md bg-sky-500/15 px-3 py-1.5 text-xs font-medium text-sky-200 ring-1 ring-sky-400/35 disabled:opacity-50"
-                  >
-                    {platformBusy === 'activate' ? 'Activating…' : 'Activate online'}
-                  </button>
-                )}
-                {client.licenseRestore && (
-                  <button
-                    type="button"
-                    onClick={() => void restoreNow()}
-                    disabled={platformBusy !== null}
-                    className="rounded-md bg-base-800/80 px-3 py-1.5 text-xs font-medium text-ink-200 ring-1 ring-glass-line disabled:opacity-50"
-                  >
-                    {platformBusy === 'restore' ? 'Restoring…' : 'Restore'}
-                  </button>
-                )}
-                {client.licenseHeartbeat && (
-                  <button
-                    type="button"
-                    onClick={() => void heartbeatNow()}
-                    disabled={platformBusy !== null}
-                    className="rounded-md bg-base-800/80 px-3 py-1.5 text-xs font-medium text-ink-200 ring-1 ring-glass-line disabled:opacity-50"
-                  >
-                    {platformBusy === 'heartbeat' ? 'Refreshing…' : 'Refresh now'}
-                  </button>
-                )}
-                {platformMsg && (
-                  <span className={cx('text-[11px]', platformResult?.ok ? 'text-mint-300' : 'text-amber-300')}>
-                    {platformMsg}
-                  </span>
-                )}
-              </div>
-            </GlassCard>
-          )}
-        </>
-      )}
-    </section>
-  )
-}
-
-function BillingUsageBar({ used, total }: { used: number | null; total: number | null }) {
-  if (total === null || total === 0) return null // unlimited / no cap → no bar
-  const pct = used === null ? 0 : Math.min(100, Math.round((used / total) * 100))
-  const full = used !== null && used >= total
-  return (
-    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-base-800/70">
-      <div
-        className={cx('h-full rounded-full', full ? 'bg-run-errored/70' : 'bg-mint-500/60')}
-        style={{ width: `${pct}%` }}
-      />
-    </div>
-  )
-}
-
-/** Settings → Billing — shows the install's entitlement USAGE (counted from Cortex) vs the
- * entitled TOTAL, the wallet balance, and active add-ons. One project / one team / four
- * workers come out of the box; add-ons (bought in the cust-portal) raise the caps. All
- * purchase + management stays in the Kaidera AI cust-portal — this tab is read-only. */
-function BillingTab({ project, client }: { project: string; client: SettingsWriteClient }) {
-  const [data, setData] = useState<BillingStatus | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!client.billing) return
-    let cancelled = false
-    client
-      .billing(project)
-      .then((d) => {
-        if (!cancelled) {
-          setData(d)
-          setError(null)
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [client, project])
-
-  const isDev = data?.edition === 'dev'
-  const wallet = data?.wallet
-  const fmtMoney = (w: BillingStatus['wallet'] | undefined) =>
-    w && typeof w.balance === 'number' ? `${w.currency ?? ''} ${w.balance.toFixed(2)}`.trim() : '—'
-
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className={SECTION_LABEL}>Billing</h2>
-        {data && !isDev && (
-          <a
-            href={data.portal_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="rounded-md bg-mint-500/15 px-2.5 py-1 text-[11px] font-medium text-mint-200 ring-1 ring-mint-400/35 hover:bg-mint-500/20"
-          >
-            Manage in cust-portal ↗
-          </a>
-        )}
-      </div>
-
-      {client.billing && loading ? (
-        <p className="px-1 py-2 text-xs text-ink-500">Loading billing…</p>
-      ) : !client.billing ? (
-        <p className="px-1 py-2 text-xs text-ink-500">This console build doesn't expose billing.</p>
-      ) : !data ? (
-        <p className="px-1 py-2 text-xs text-run-errored/90">Couldn't load billing. {error}</p>
-      ) : isDev ? (
-        <GlassCard className="p-4 text-xs leading-relaxed text-ink-300">
-          The <b>dev</b> edition is unrestricted — no billing, unlimited projects/teams/workers.
-        </GlassCard>
-      ) : (
-        <>
-          <GlassCard className="flex items-center justify-between p-4">
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">Wallet balance</div>
-              <div className="mt-0.5 text-2xl font-semibold text-ink-100">{fmtMoney(wallet)}</div>
-              {wallet?.as_of ? (
-                <div className="text-[10px] text-ink-500">
-                  as of {new Date(wallet.as_of * 1000).toLocaleDateString()}
-                </div>
-              ) : !wallet ? (
-                <div className="text-[10px] text-ink-500">No wallet on this license — top up in the cust-portal.</div>
-              ) : null}
-            </div>
-            <a
-              href={data.portal_url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="rounded-md border border-glass-line px-3 py-1.5 text-xs font-medium text-ink-200 hover:border-mint-400/50"
-            >
-              Top up ↗
-            </a>
-          </GlassCard>
-
-          <GlassCard className="space-y-3 p-4">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">Entitlement usage</div>
-            {data.entitlements.map((row) => (
-              <div key={row.kind}>
-                <div className="flex items-baseline justify-between text-xs">
-                  <span className="text-ink-200">{row.label}</span>
-                  <span className="tabular-nums text-ink-400">
-                    {row.used ?? '—'} / {row.total === null ? '∞' : row.total}
-                  </span>
-                </div>
-                <BillingUsageBar used={row.used} total={row.total} />
-              </div>
-            ))}
-            <p className="text-[10px] leading-relaxed text-ink-500">
-              One project, one AI Worker team, and four AI Workers come out of the box. Buy add-ons (extra
-              workers, teams, or projects) in the cust-portal — they raise these limits.
-            </p>
-          </GlassCard>
-
-          {data.addons.length > 0 && (
-            <GlassCard className="space-y-2 p-4">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">Active add-ons</div>
-              <div className="flex flex-wrap gap-1.5">
-                {data.addons.map((a, i) => (
-                  <span
-                    key={i}
-                    className="rounded bg-mint-500/12 px-2 py-0.5 text-[11px] font-medium text-mint-300"
-                  >
-                    {(a.sku ?? '').replace('addon:', '')} ×{a.qty ?? 1}
-                  </span>
-                ))}
-              </div>
-            </GlassCard>
-          )}
-        </>
-      )}
-    </section>
-  )
-}
 
 /** The settings sections (the sub-nav order, mirroring the legacy tab shell). */
 type SettingsTab =
   | 'system'
-  | 'providers'
   | 'workspace'
   | 'extensions'
   | 'cortex'
-  | 'license'
-  | 'billing'
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'system', label: 'System' },
-  { id: 'providers', label: 'Providers' },
   { id: 'workspace', label: 'Workspace' },
   { id: 'extensions', label: 'Extensions' },
   { id: 'cortex', label: 'Cortex' },
-  { id: 'license', label: 'License' },
-  { id: 'billing', label: 'Billing' },
 ]
 
 interface SettingsViewProps {
@@ -713,10 +116,6 @@ interface SettingsViewProps {
   appSettings: AppSettings | null
   /** The typed System schema (GET …/system-schema). Null while loading / on a stale backend. */
   systemSchema: SystemSchema | null
-  /** The live provider/model catalog (GET …/providers) — the Models section. Null while loading. */
-  providers: ProvidersCatalog | null
-  /** The configured/active providers (GET …/providers/config) — the Providers control surface. */
-  providersConfig: ProvidersConfig | null
   /** The selected project's registry row (for the Cortex tab — repo_root / status). */
   projectRow: Project | null
   /** ALL active projects (the Workspace tab is a MULTI-project repo-root editor — every active
@@ -857,7 +256,7 @@ function AppSettingRow({
 }
 
 // ===========================================================================
-//  Shared field label class (used by the System custom-providers + Workspace tabs).
+//  Shared field label class (used by the System and Workspace tabs).
 //  NOTE: the per-agent Configure experience that used to live HERE has MOVED into the
 //  agent-detail middle pane (`AgentConfigEditor`) — Settings carries no per-agent
 //  config anymore (the no-repeat / "settings in the agent pane" directive).
@@ -867,26 +266,8 @@ const LABEL_CLASS =
   'flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500'
 
 // ===========================================================================
-//  System tab (step 3b) — the TYPED form + secret masking + key-test, custom
-//  providers, and the folded raw App-settings editor.
+//  System tab — the typed form, secret masking, and raw App-settings editor.
 // ===========================================================================
-
-/** A small inline key-test result chip (✓ ok / ✗ failed + the human detail). */
-function KeyTestChip({ result }: { result: KeyTestResult | null }) {
-  if (!result) return null
-  return (
-    <span
-      data-testid="keytest-result"
-      className={cx(
-        'inline-flex items-center gap-1 text-[11px] leading-snug',
-        result.ok ? 'text-mint-300' : 'text-run-errored/90',
-      )}
-    >
-      <span aria-hidden="true">{result.ok ? '✓' : '✗'}</span>
-      <span className="min-w-0">{result.detail || (result.ok ? 'ok' : 'failed')}</span>
-    </span>
-  )
-}
 
 /**
  * One typed System field. The VALUE is local component state; `onChange(key,value)`
@@ -896,24 +277,16 @@ function KeyTestChip({ result }: { result: KeyTestResult | null }) {
  */
 function SystemFieldRow({
   field,
-  project,
   disabled,
   options,
   registerChange,
-  onTest,
-  testResult,
-  testing,
 }: {
   field: SystemField
-  project: string
   disabled: boolean
   /** Resolved choosable options for a `select` field (static or dynamic); ignored otherwise. */
   options?: SelectOption[]
   /** Report a field's current value (or `undefined` to mark it unchanged/cleared). */
   registerChange: (key: string, value: unknown | undefined) => void
-  onTest: (field: SystemField, typedKey: string | undefined) => void
-  testResult: KeyTestResult | null
-  testing: boolean
 }) {
   const id = `sys-${field.key}`
 
@@ -1041,19 +414,8 @@ function SystemFieldRow({
           >
             {revealed ? 'Hide' : 'Replace'}
           </button>
-          <button
-            type="button"
-            className={BTN_GHOST}
-            disabled={disabled || testing}
-            title="Check this key against the provider (read-only — spends no tokens)"
-            onClick={() => onTest(field, revealed && secretText.trim() ? secretText : undefined)}
-          >
-            {testing ? 'Testing…' : 'Test'}
-          </button>
         </div>
         {help}
-        <KeyTestChip result={testResult} />
-        <input type="hidden" data-project={project} />
       </div>
     )
   }
@@ -1119,149 +481,8 @@ function SystemFieldRow({
   )
 }
 
-/**
- * The ADD-a-custom-provider panel — name + base URL + key → POST .../custom-providers.
- * On a successful add it calls `onSaved` so the parent refetches the configured-
- * providers view (where the new custom provider then appears with status + Test +
- * Remove). The raw key is sent once and NEVER rendered back (the list view masks it).
- */
-function CustomProvidersPanel({
-  project,
-  client,
-  onSaved,
-}: {
-  project: string
-  client: SettingsWriteClient
-  onSaved?: () => void
-}) {
-  const [name, setName] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [adding, setAdding] = useState(false)
 
-  async function add() {
-    if (!name.trim()) {
-      setError('A provider name is required.')
-      return
-    }
-    setBusy(true)
-    setError(null)
-    try {
-      const res = await client.addCustomProvider(project, {
-        name: name.trim(),
-        base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
-      })
-      if (!res.ok) {
-        setError(res.error || 'couldn’t add the provider.')
-      } else {
-        setName('')
-        setBaseUrl('')
-        setApiKey('')
-        setAdding(false)
-        onSaved?.() // refetch the configured-providers view so the new one appears
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="space-y-2" data-custom-providers>
-      <div className="px-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-          Add a custom provider
-        </h3>
-        <p className="mt-0.5 text-[10px] leading-snug text-ink-600">
-          An extra provider with its own base URL + API key (OpenAI-compatible). Stored locally +
-          masked — it then appears in the configured list above.
-        </p>
-      </div>
-
-      {error && (
-        <p className="rounded-md bg-run-errored/12 px-3 py-2 text-xs leading-relaxed text-run-errored/90">
-          {error}
-        </p>
-      )}
-
-      {adding ? (
-        <GlassCard className="space-y-2 p-4">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <div className="space-y-1">
-              <label htmlFor="cp-name" className={LABEL_CLASS}>
-                Provider name
-              </label>
-              <input
-                id="cp-name"
-                className={FIELD_CLASS}
-                value={name}
-                placeholder="e.g. Together AI"
-                disabled={busy}
-                autoComplete="off"
-                onChange={(e) => setName(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="cp-base-url" className={LABEL_CLASS}>
-                Base URL
-              </label>
-              <input
-                id="cp-base-url"
-                className={FIELD_CLASS}
-                value={baseUrl}
-                placeholder="https://api.together.xyz/v1"
-                disabled={busy}
-                autoComplete="off"
-                onChange={(e) => setBaseUrl(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="cp-api-key" className={LABEL_CLASS}>
-                API key
-              </label>
-              <input
-                id="cp-api-key"
-                className={FIELD_CLASS}
-                type="password"
-                value={apiKey}
-                placeholder="enter a key…"
-                disabled={busy}
-                autoComplete="off"
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" className={BTN_CLASS} disabled={busy} onClick={add}>
-              Add provider
-            </button>
-            <button
-              type="button"
-              className={BTN_GHOST}
-              disabled={busy}
-              onClick={() => {
-                setAdding(false)
-                setError(null)
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </GlassCard>
-      ) : (
-        <button type="button" className={BTN_GHOST} onClick={() => setAdding(true)}>
-          + Add custom provider
-        </button>
-      )}
-    </section>
-  )
-}
-
-/** The System tab — typed form (save only changed keys) + custom providers + the raw editor. */
+/** The System tab — typed form (save only changed keys) plus the raw editor. */
 function SystemTab({
   project,
   schema,
@@ -1287,10 +508,6 @@ function SystemTab({
   // A bump key forces the typed inputs to remount (Cancel / Reload-from-store).
   const [resetNonce, setResetNonce] = useState(0)
 
-  // Per-field key-test state.
-  const [testingKey, setTestingKey] = useState<string | null>(null)
-  const [testResults, setTestResults] = useState<Record<string, KeyTestResult | null>>({})
-
   // Re-seed (clear pending changes) whenever a NEW schema object lands.
   const [seededFrom, setSeededFrom] = useState<SystemSchema | null>(schema)
   if (schema !== seededFrom) {
@@ -1308,34 +525,6 @@ function SystemTab({
       return next
     })
   }, [])
-
-  const runKeyTest = useCallback(
-    async (providerRef: string, typedKey: string | undefined) => {
-      setTestingKey(providerRef)
-      setTestResults((prev) => ({ ...prev, [providerRef]: null }))
-      try {
-        const res = await client.providerKeyTest(project, {
-          provider: providerRef,
-          ...(typedKey ? { key: typedKey } : { use_stored: true }),
-        })
-        setTestResults((prev) => ({ ...prev, [providerRef]: res }))
-      } catch (e) {
-        setTestResults((prev) => ({
-          ...prev,
-          [providerRef]: {
-            project,
-            ok: false,
-            detail: e instanceof Error ? e.message : String(e),
-            status: 'error',
-            label: providerRef,
-          },
-        }))
-      } finally {
-        setTestingKey(null)
-      }
-    },
-    [client, project],
-  )
 
   const changedKeys = Object.keys(changed)
   const dirty = changedKeys.length > 0
@@ -1387,10 +576,6 @@ function SystemTab({
           back</b>: a stored key shows as <code className="font-mono">•••• set</code>; use{' '}
           <b>Replace</b> to enter a new one. <b>Save</b> writes only the fields you changed.
         </p>
-        <p className="mt-1.5 text-[11px] leading-relaxed text-ink-500">
-          Provider keys live in the <b>Providers tab</b> now — that is the single home for adding,
-          testing, and editing provider credentials (they are not shown here, to avoid duplication).
-        </p>
       </div>
 
       {error && (
@@ -1423,13 +608,9 @@ function SystemTab({
                   <SystemFieldRow
                     key={f.key}
                     field={f}
-                    project={project}
                     disabled={saving}
                     options={resolveFieldOptions(f, projects)}
                     registerChange={registerChange}
-                    onTest={(field, typedKey) => runKeyTest(field.key, typedKey)}
-                    testResult={testResults[f.key] ?? null}
-                    testing={testingKey === f.key}
                   />
                 ))}
               </div>
@@ -1457,9 +638,7 @@ function SystemTab({
         </div>
       )}
 
-      {/* The raw App-settings key→value editor, folded in (still fully editable).
-          Provider secret keys are filtered OUT of this server-side — a provider key
-          is set/edited ONLY in the Providers tab now. */}
+      {/* The raw App-settings key→value editor, folded in (still fully editable). */}
       {appSettings && rawKeys.length > 0 && (
         <section className="space-y-2">
           <div className="flex items-baseline justify-between px-1">
@@ -1490,796 +669,6 @@ function SystemTab({
           </GlassCard>
         </section>
       )}
-    </div>
-  )
-}
-
-// ===========================================================================
-//  Providers tab — the CONTROL surface for provider keys/config:
-//    (a) the configured/active providers (key status + Test + Add key),
-//    (b) an Add affordance (preconfigured / custom),
-//    (c) the Models catalog (the live per-provider model tables).
-// ===========================================================================
-
-/** Format a per-Mtok price (null → "—"). */
-function price(v: number | null): string {
-  if (v === null || v === undefined) return '—'
-  return `$${v.toFixed(2)}`
-}
-
-/** Format a context window (null → "—", else with thousands separators). */
-function ctx(v: number | null): string {
-  if (v === null || v === undefined) return '—'
-  return v.toLocaleString()
-}
-
-/** The Models catalog — the live model lists grouped per provider (the "Models section"). */
-function ModelsCatalog({
-  providers,
-  config,
-}: {
-  providers: ProvidersCatalog | null
-  config: ProvidersConfig | null
-}) {
-  if (!providers) {
-    return <p className="px-1 py-2 text-xs text-ink-500">Loading the model catalog…</p>
-  }
-  // M3 — show ONLY the CONFIGURED providers' models. The catalog can fetch some providers
-  // KEYLESSLY (e.g. OpenRouter), so without this filter an unconfigured provider floods the
-  // list while the providers the operator actually set up are buried. Cross-reference the
-  // catalog groups against the providers that have a key set (the Providers-config view). The
-  // config isn't loaded yet → show all (better than a blank list mid-load).
-  const allGroups = providers.providers ?? []
-  const configuredNames = new Set(
-    (config?.providers ?? [])
-      .filter((p) => p.key_is_set)
-      .map((p) => (p.name || '').toLowerCase()),
-  )
-  const groups = config
-    ? allGroups.filter((g) => configuredNames.has((g.name || '').toLowerCase()))
-    : allGroups
-  const total = groups.reduce((n, g) => n + g.models.length, 0)
-
-  if (groups.length === 0) {
-    return (
-      <p className="px-1 py-2 text-xs leading-relaxed text-ink-500">
-        No models yet — add a provider key above. Only the providers you've configured are
-        listed here.
-      </p>
-    )
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="px-1 text-[11px] leading-relaxed text-ink-500">
-        A live catalog of every model each configured provider offers — grouped by provider with{' '}
-        <b>type</b>, <b>reasoning tiers</b>, <b>input/output price</b> (per 1M tokens), and{' '}
-        <b>context window</b>.{' '}
-        <span className="text-ink-600">
-          {total} model{total !== 1 ? 's' : ''} · {groups.length} provider
-          {groups.length !== 1 ? 's' : ''}
-        </span>
-      </p>
-      {groups.map((g) => (
-        <details
-          key={g.name || 'other'}
-          className="group glass-soft overflow-hidden rounded-xl border border-glass-line"
-          data-provider={g.name}
-        >
-          <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-sm font-medium text-ink-100 marker:hidden">
-            <span className="text-ink-500 transition-transform group-open:rotate-90" aria-hidden="true">
-              ▸
-            </span>
-            <span className="capitalize">{g.name || 'other'}</span>
-            {g.balance && (
-              <span
-                className="rounded bg-mint-500/12 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-mint-300"
-                title={
-                  g.balance.detail
-                    ? `Account balance — ${g.balance.detail}`
-                    : 'Account balance'
-                }
-              >
-                {g.balance.display}
-              </span>
-            )}
-            <span className="ml-auto rounded bg-base-700/60 px-1.5 py-0.5 text-[10px] text-ink-400">
-              {g.models.length} model{g.models.length !== 1 ? 's' : ''}
-            </span>
-          </summary>
-          <div className="overflow-x-auto border-t border-glass-line">
-            {g.models.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-ink-500">No models returned.</p>
-            ) : (
-              <table className="w-full min-w-[640px] text-left text-[11px]">
-                <thead>
-                  <tr className="text-[10px] uppercase tracking-wide text-ink-600">
-                    <th className="px-3 py-2 font-medium">Model</th>
-                    <th className="px-3 py-2 font-medium">Type</th>
-                    <th className="px-3 py-2 font-medium">Reasoning</th>
-                    <th className="px-3 py-2 font-medium">In / Mtok</th>
-                    <th className="px-3 py-2 font-medium">Out / Mtok</th>
-                    <th className="px-3 py-2 font-medium">Context</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-glass-line">
-                  {g.models.map((m) => (
-                    <tr key={m.model} className="text-ink-300">
-                      <td className="px-3 py-2 font-mono text-ink-100">{m.model}</td>
-                      <td className="px-3 py-2">{m.type}</td>
-                      <td className="px-3 py-2">
-                        {m.reasoning_tiers.length > 0 ? m.reasoning_tiers.join(' · ') : '—'}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums">{price(m.input_price_per_mtok)}</td>
-                      <td className="px-3 py-2 tabular-nums">{price(m.output_price_per_mtok)}</td>
-                      <td className="px-3 py-2 tabular-nums">{ctx(m.context_window)}</td>
-                      <td className="px-3 py-2">
-                        <span
-                          className="rounded bg-base-700/60 px-1.5 py-0.5 text-[10px] text-ink-400"
-                          title={`source: ${m.source}`}
-                        >
-                          {m.freshness}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </details>
-      ))}
-    </div>
-  )
-}
-
-/** A status pill for a provider's key — "key set" (mint) / "not set" (muted). */
-function KeyStatusPill({ on }: { on: boolean }) {
-  return (
-    <span
-      className={cx(
-        'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-        on ? 'bg-mint-500/15 text-mint-300' : 'bg-base-700/60 text-ink-500',
-      )}
-    >
-      {on ? 'key set' : 'not set'}
-    </span>
-  )
-}
-
-/**
- * One configured/active provider row — its label + key status + Test (when
- * testable) and, for a preconfigured provider without a key, an inline "Add key"
- * affordance (reveals an EMPTY input → POST .../app, the canonical secret write).
- * The stored key is NEVER rendered (only the status pill).
- */
-function ProviderConfigRowView({
-  row,
-  project,
-  client,
-  onSaved,
-  onTest,
-  testResult,
-  testing,
-}: {
-  row: ProviderConfigRow
-  project: string
-  client: SettingsWriteClient
-  onSaved: () => void
-  onTest: (row: ProviderConfigRow, typedKey: string | undefined) => void
-  testResult: KeyTestResult | null
-  testing: boolean
-}) {
-  const [adding, setAdding] = useState(false)
-  const [keyText, setKeyText] = useState('')
-  const [bedrockAccessKeyId, setBedrockAccessKeyId] = useState('')
-  const [bedrockSecretAccessKey, setBedrockSecretAccessKey] = useState('')
-  const [bedrockRegion, setBedrockRegion] = useState('us-east-1')
-  const [manifoldProjectId, setManifoldProjectId] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const inputId = `provkey-${row.name}`
-  // The custom-provider id (the `custom:<id>` ref tail) — used to Remove a custom one.
-  const customId = row.is_custom ? row.provider_ref.replace(/^custom:/, '') : ''
-  const isBedrock = !row.is_custom && row.name === 'bedrock'
-  const bedrockCanSave = row.key_is_set
-    ? Boolean(bedrockAccessKeyId.trim() || bedrockSecretAccessKey.trim() || bedrockRegion.trim())
-    : Boolean(bedrockAccessKeyId.trim() && bedrockSecretAccessKey.trim())
-  // Kaidera AI Manifold needs BOTH the API key and the project id (the X-Project-Id header).
-  const isManifold = !row.is_custom && row.name === 'kaidera-manifold'
-  const manifoldCanSave = row.key_is_set
-    ? Boolean(keyText.trim() || manifoldProjectId.trim())
-    : Boolean(keyText.trim() && manifoldProjectId.trim())
-  const canSave = isBedrock ? bedrockCanSave : isManifold ? manifoldCanSave : Boolean(keyText.trim())
-
-  async function saveKey() {
-    setBusy(true)
-    setError(null)
-    try {
-      if (isBedrock) {
-        const updates: Record<string, string> = {}
-        const accessKeyId = bedrockAccessKeyId.trim()
-        const secretAccessKey = bedrockSecretAccessKey.trim()
-        const region = bedrockRegion.trim()
-        if (!row.key_is_set && (!accessKeyId || !secretAccessKey)) {
-          throw new Error('Amazon Bedrock needs both AWS access key ID and AWS secret access key.')
-        }
-        if (accessKeyId) updates.aws_access_key_id = accessKeyId
-        if (secretAccessKey) updates.aws_secret_access_key = secretAccessKey
-        if (region) updates.aws_region = region
-        if (Object.keys(updates).length === 0) return
-        if (client.setAppSettings) {
-          await client.setAppSettings(project, updates)
-        } else {
-          for (const [k, v] of Object.entries(updates)) {
-            await client.setAppSetting(project, k, v)
-          }
-        }
-        setBedrockAccessKeyId('')
-        setBedrockSecretAccessKey('')
-        setBedrockRegion(region || 'us-east-1')
-      } else if (isManifold) {
-        const updates: Record<string, string> = {}
-        const key = keyText.trim()
-        const projectId = manifoldProjectId.trim()
-        if (!row.key_is_set && (!key || !projectId)) {
-          throw new Error('Kaidera AI Manifold needs both the Manifold API key and the project id.')
-        }
-        if (key) updates.kaidera_manifold_api_key = key
-        if (projectId) updates.kaidera_manifold_project_id = projectId
-        if (Object.keys(updates).length === 0) return
-        if (client.setAppSettings) {
-          await client.setAppSettings(project, updates)
-        } else {
-          for (const [k, v] of Object.entries(updates)) {
-            await client.setAppSetting(project, k, v)
-          }
-        }
-        setKeyText('')
-        setManifoldProjectId('')
-      } else {
-        const v = keyText.trim()
-        if (!v || !row.key_field) return
-        // The canonical secret write — the provider's key_field via the app-settings save.
-        await client.setAppSetting(project, row.key_field, v)
-        setKeyText('')
-      }
-      setAdding(false)
-      onSaved()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function removeCustom() {
-    if (!customId) return
-    setBusy(true)
-    setError(null)
-    try {
-      await client.deleteCustomProvider(project, customId)
-      onSaved() // refetch the configured-providers view (the row disappears)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="space-y-1.5 px-4 py-2.5" data-provider-config={row.name}>
-      <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-ink-100">
-            {row.label}
-            {row.is_custom && (
-              <span className="ml-2 rounded bg-base-700/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-ink-500">
-                custom
-              </span>
-            )}
-          </div>
-          {row.base_url && (
-            <div className="truncate font-mono text-[10px] text-ink-500">{row.base_url}</div>
-          )}
-        </div>
-        <KeyStatusPill on={row.key_is_set} />
-        {/* preconfigured provider → "Add key" when unset, "Replace" to rotate a set/expired key */}
-        {!row.is_custom && (
-          <button
-            type="button"
-            className={BTN_GHOST}
-            disabled={busy}
-            onClick={() => setAdding((v) => !v)}
-          >
-            {adding ? 'Cancel' : row.key_is_set ? 'Replace' : 'Add key'}
-          </button>
-        )}
-        {row.testable && (
-          <button
-            type="button"
-            className={BTN_GHOST}
-            disabled={testing}
-            title="Check this key against the provider (read-only — spends no tokens)"
-            onClick={() => onTest(row, undefined)}
-          >
-            {testing ? 'Testing…' : 'Test'}
-          </button>
-        )}
-        {row.is_custom && (
-          <button
-            type="button"
-            className={cx(BTN_GHOST, 'text-run-errored/80 hover:text-run-errored')}
-            disabled={busy}
-            aria-label={`Remove ${row.label}`}
-            onClick={removeCustom}
-          >
-            Remove
-          </button>
-        )}
-      </div>
-
-      {adding && (
-        isBedrock ? (
-          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_auto]">
-            <input
-              className={FIELD_CLASS}
-              type="password"
-              value={bedrockAccessKeyId}
-              placeholder="AWS access key ID…"
-              aria-label="Amazon Bedrock AWS access key ID"
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setBedrockAccessKeyId(e.target.value)}
-            />
-            <input
-              className={FIELD_CLASS}
-              type="password"
-              value={bedrockSecretAccessKey}
-              placeholder="AWS secret access key…"
-              aria-label="Amazon Bedrock AWS secret access key"
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setBedrockSecretAccessKey(e.target.value)}
-            />
-            <input
-              className={FIELD_CLASS}
-              type="text"
-              value={bedrockRegion}
-              placeholder="us-east-1"
-              aria-label="Amazon Bedrock AWS region"
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setBedrockRegion(e.target.value)}
-            />
-            <button type="button" className={BTN_CLASS} disabled={busy || !canSave} onClick={saveKey}>
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        ) : isManifold ? (
-          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-            <input
-              id={inputId}
-              className={FIELD_CLASS}
-              type="password"
-              value={keyText}
-              placeholder="Manifold API key (mfld_live_v1_…)"
-              aria-label="Kaidera AI Manifold API key"
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setKeyText(e.target.value)}
-            />
-            <input
-              className={FIELD_CLASS}
-              type="text"
-              value={manifoldProjectId}
-              placeholder="Company ID (from your Kaidera panel)"
-              aria-label="Kaidera AI Manifold Company ID"
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setManifoldProjectId(e.target.value)}
-            />
-            <button type="button" className={BTN_CLASS} disabled={busy || !canSave} onClick={saveKey}>
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <input
-              id={inputId}
-              className={FIELD_CLASS}
-              type="password"
-              value={keyText}
-              placeholder="enter a key…"
-              aria-label={`${row.label} key`}
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setKeyText(e.target.value)}
-            />
-            <button type="button" className={BTN_CLASS} disabled={busy || !canSave} onClick={saveKey}>
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        )
-      )}
-      {error && <p className="text-[11px] text-run-errored/80">{error}</p>}
-      <KeyTestChip result={testResult} />
-    </div>
-  )
-}
-
-/** The configured/active providers panel — built-ins + customs, with status + Test + Add key. */
-export function ConfiguredProvidersPanel({
-  project,
-  config,
-  client,
-  onSaved,
-}: {
-  project: string
-  config: ProvidersConfig | null
-  client: SettingsWriteClient
-  onSaved: () => void
-}) {
-  const [testingRef, setTestingRef] = useState<string | null>(null)
-  const [testResults, setTestResults] = useState<Record<string, KeyTestResult | null>>({})
-
-  const runKeyTest = useCallback(
-    async (row: ProviderConfigRow, typedKey: string | undefined) => {
-      const ref = row.provider_ref
-      setTestingRef(ref)
-      setTestResults((prev) => ({ ...prev, [ref]: null }))
-      try {
-        const res = await client.providerKeyTest(project, {
-          provider: ref,
-          ...(typedKey ? { key: typedKey } : { use_stored: true }),
-        })
-        setTestResults((prev) => ({ ...prev, [ref]: res }))
-      } catch (e) {
-        setTestResults((prev) => ({
-          ...prev,
-          [ref]: {
-            project,
-            ok: false,
-            detail: e instanceof Error ? e.message : String(e),
-            status: 'error',
-            label: row.label,
-          },
-        }))
-      } finally {
-        setTestingRef(null)
-      }
-    },
-    [client, project],
-  )
-
-  const rows = config?.providers ?? []
-
-  return (
-    <section className="space-y-2" data-providers-config>
-      <div className="px-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-          Configured providers
-        </h3>
-        <p className="mt-0.5 text-[10px] leading-snug text-ink-600">
-          Which providers have a key set. Add a key to a preconfigured provider, or add a custom one
-          below. Keys are stored locally + masked — the stored key is never shown.
-        </p>
-      </div>
-      {!config ? (
-        <p className="px-1 py-1 text-xs text-ink-500">Loading providers…</p>
-      ) : rows.length === 0 ? (
-        <p className="px-1 py-1 text-xs text-ink-500">No providers available.</p>
-      ) : (
-        <GlassCard className="divide-y divide-glass-line p-0">
-          {rows.map((r) => (
-            <ProviderConfigRowView
-              key={r.provider_ref}
-              row={r}
-              project={project}
-              client={client}
-              onSaved={onSaved}
-              onTest={runKeyTest}
-              testResult={testResults[r.provider_ref] ?? null}
-              testing={testingRef === r.provider_ref}
-            />
-          ))}
-        </GlassCard>
-      )}
-    </section>
-  )
-}
-
-/**
- * A1 - Codex (ChatGPT) subscription login panel. Drives the supported Codex CLI
- * device-code flow: `start` -> show OpenAI's verification URL + one-time code ->
- * poll until the user authorizes. The Codex CLI owns credential storage; Kaidera OS
- * only surfaces status and operator instructions.
- */
-interface CodexFlow {
-  device_auth_id: string
-  user_code: string
-  verification_uri: string
-  interval: number
-  expires_in?: number
-  method?: string
-  ok?: boolean
-  error?: string
-}
-
-interface CodexLoginState {
-  logged_in?: boolean
-  account_id?: string
-  method?: string
-  auth_method?: string
-  cli_available?: boolean
-  cli_message?: string
-}
-
-function CodexLoginPanel() {
-  const [loggedIn, setLoggedIn] = useState<boolean | null>(null) // null = still checking
-  const [accountId, setAccountId] = useState('')
-  const [loginMethod, setLoginMethod] = useState('')
-  const [authMethod, setAuthMethod] = useState('')
-  const [cliAvailable, setCliAvailable] = useState(true)
-  const [cliMessage, setCliMessage] = useState('')
-  const [flow, setFlow] = useState<CodexFlow | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const pollRef = useRef<number | null>(null)
-
-  const loadState = useCallback(async () => {
-    try {
-      const res = await fetch('/settings/providers/codex-login/state', {
-        headers: { Accept: 'application/json' },
-      })
-      const j = res.ok ? await res.json() : null
-      if (j) {
-        const state = j as CodexLoginState
-        setLoggedIn(Boolean(state.logged_in))
-        setAccountId(String(state.account_id || ''))
-        setLoginMethod(String(state.method || ''))
-        setAuthMethod(String(state.auth_method || ''))
-        setCliAvailable(Boolean(state.cli_available))
-        setCliMessage(String(state.cli_message || ''))
-      } else {
-        setLoggedIn(false)
-      }
-    } catch {
-      setLoggedIn(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      void loadState()
-    })
-  }, [loadState])
-  // Stop any in-flight poll loop when the panel unmounts (tab switch / project change).
-  useEffect(() => () => { if (pollRef.current) window.clearTimeout(pollRef.current) }, [])
-
-  function pollLoop(did: string, uc: string, interval: number) {
-    const tick = async () => {
-      try {
-        const res = await fetch('/settings/providers/codex-login/poll', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({ device_auth_id: did, user_code: uc }),
-        })
-        const j = res.ok ? await res.json() : { status: 'error', message: `HTTP ${res.status}` }
-        if (j.status === 'done') {
-          setFlow(null)
-          setBusy(false)
-          await loadState()
-          return
-        }
-        if (j.status === 'error') {
-          setError(j.message || 'login failed')
-          setFlow(null)
-          setBusy(false)
-          return
-        }
-        pollRef.current = window.setTimeout(tick, interval * 1000) // pending → keep polling
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-        setFlow(null)
-        setBusy(false)
-      }
-    }
-    pollRef.current = window.setTimeout(tick, interval * 1000)
-  }
-
-  async function startLogin() {
-    setBusy(true)
-    setError(null)
-    if (pollRef.current) window.clearTimeout(pollRef.current)
-    try {
-      const res = await fetch('/settings/providers/codex-login/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      })
-      if (!res.ok) throw new Error(`couldn't start the login (HTTP ${res.status})`)
-      const f = (await res.json()) as CodexFlow
-      if (f.ok === false) throw new Error(f.error || 'Codex login could not start')
-      if (!f.verification_uri || !f.user_code || !f.device_auth_id) {
-        throw new Error(f.error || 'Codex login did not return a verification URL and code')
-      }
-      setFlow(f)
-      pollLoop(f.device_auth_id, f.user_code, Math.max(2, Number(f.interval) || 5))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setBusy(false)
-    }
-  }
-
-  async function logout() {
-    setBusy(true)
-    setError(null)
-    try {
-      await fetch('/settings/providers/codex-login/logout', {
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-      })
-      await loadState()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="space-y-2" data-codex-login>
-      <div className="px-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-          Subscriptions
-        </h3>
-        <p className="mt-0.5 text-[10px] leading-snug text-ink-600">
-          Log in to your <b>Codex (ChatGPT) subscription</b>. Kaidera OS uses the supported
-          Codex CLI device-code flow and never asks you to paste subscription tokens.
-        </p>
-      </div>
-      <GlassCard className="p-4">
-        {loggedIn === null ? (
-          <p className="text-xs text-ink-500">Checking Codex login…</p>
-        ) : loggedIn ? (
-          <div className="space-y-2">
-            <div className="flex items-center gap-3">
-              <StatusDot status="running" />
-              <div className="min-w-0 flex-1 text-sm text-ink-100">
-                Logged in
-                {loginMethod === 'codex_cli' ? <span className="text-ink-400"> via Codex CLI</span> : null}
-                {accountId ? <span className="text-ink-400"> · {accountId}</span> : null}
-              </div>
-              <button type="button" className={BTN_GHOST} disabled={busy} onClick={logout}>
-                {busy ? 'Working…' : 'Log out'}
-              </button>
-            </div>
-            {authMethod === 'api_key' ? (
-              <p className="text-[11px] text-amber-300/80">
-                Codex reports an API-key login. Use ChatGPT/device login for subscription access.
-              </p>
-            ) : null}
-          </div>
-        ) : flow ? (
-          <div className="space-y-2 text-xs text-ink-200">
-            <p>
-              1. Open{' '}
-              <a
-                href={flow.verification_uri}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono text-mint-300 underline decoration-mint-400/40 hover:text-mint-200"
-              >
-                {flow.verification_uri || 'the verification page'}
-              </a>
-            </p>
-            <p className="flex items-center gap-2">
-              2. Enter this one-time code in the OpenAI page:{' '}
-              <code className="rounded bg-base-900/70 px-2 py-1 font-mono text-sm tracking-[0.2em] text-ink-100">
-                {flow.user_code || '—'}
-              </code>
-            </p>
-            <p className="flex items-center gap-2 text-[11px] text-ink-500">
-              <StatusDot status="queued" pulse /> Waiting for you to authorize… (updates automatically)
-            </p>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3">
-            <StatusDot status="idle" />
-            <div className="min-w-0 flex-1 text-sm text-ink-300">
-              {cliAvailable
-                ? 'Not logged in - use your ChatGPT subscription via Codex.'
-                : 'Codex CLI was not found on this machine.'}
-            </div>
-            <button type="button" className={BTN_CLASS} disabled={busy || !cliAvailable} onClick={startLogin}>
-              {busy ? 'Starting…' : 'Log in to Codex'}
-            </button>
-          </div>
-        )}
-        {error && <p className="mt-2 text-[11px] text-run-errored/80">{error}</p>}
-        {!loggedIn && cliMessage ? (
-          <p className="mt-2 text-[11px] text-ink-500">{cliMessage}</p>
-        ) : null}
-        {!loggedIn ? (
-          <p className="mt-2 text-[11px] text-ink-500">
-            Terminal fallback: <code className="font-mono text-ink-300">codex login --device-auth</code>
-          </p>
-        ) : null}
-      </GlassCard>
-    </section>
-  )
-}
-
-/** The Providers tab — the control surface: configured providers + Add + the Models catalog. */
-function ProvidersTab({
-  project,
-  providers,
-  config,
-  client,
-  onSaved,
-}: {
-  project: string
-  providers: ProvidersCatalog | null
-  config: ProvidersConfig | null
-  client: SettingsWriteClient
-  onSaved: () => void
-}) {
-  const [refreshing, setRefreshing] = useState(false)
-  async function refreshCatalog() {
-    setRefreshing(true)
-    try {
-      // #131 — force a LIVE catalog re-fetch on the backend (cache-bust), then refetch.
-      await fetch(`/settings/${encodeURIComponent(project || '_system')}/providers?refresh=1`, {
-        headers: { Accept: 'application/json' },
-      })
-    } catch {
-      /* ignore — onSaved still refetches from the existing cache */
-    }
-    onSaved()
-    setRefreshing(false)
-  }
-  return (
-    <div className="space-y-5">
-      <p className="px-1 text-[11px] leading-relaxed text-ink-500">
-        The single home for provider keys &amp; config. See which providers are <b>configured</b>,{' '}
-        <b>test</b> a key, <b>add</b> a preconfigured or custom provider — and browse the live{' '}
-        <b>Models</b> catalog below.
-      </p>
-
-      {/* (a) configured/active providers — status + Test + Add key */}
-      <ConfiguredProvidersPanel project={project} config={config} client={client} onSaved={onSaved} />
-
-      {/* (b) add a CUSTOM provider — name + base URL + key */}
-      <CustomProvidersPanel project={project} client={client} />
-
-      {/* (b2) A1 — the Codex (ChatGPT) subscription login (native device-code OAuth, no Pi) */}
-      <CodexLoginPanel />
-
-      {/* (c) the Models catalog (the per-provider model tables) */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between px-1">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
-            Models
-          </h3>
-          <button
-            type="button"
-            className={BTN_GHOST}
-            disabled={refreshing}
-            onClick={refreshCatalog}
-            title="Force a live re-fetch of every configured provider's models + prices (bypasses the ~15-min cache)"
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-        </div>
-        <ModelsCatalog providers={providers} config={config} />
-      </section>
     </div>
   )
 }
@@ -2957,8 +1346,8 @@ function CortexIngestionSettings({
         <div>
           <h3 className="text-sm font-semibold text-ink-100">Ingestion models</h3>
           <p className="mt-1 max-w-3xl text-[11px] leading-relaxed text-ink-500">
-            API-owned defaults for Cortex embeddings, rerank, and vector search. Provider keys stay
-            in Providers/env; this row only selects which configured provider/model Cortex uses.
+            API-owned defaults for Cortex embeddings, rerank, and vector search. Cortex owns service
+            credentials; this row only selects its configured connector and model.
           </p>
         </div>
         <button type="button" className={BTN_CLASS} disabled={saving || loading} onClick={save}>
@@ -2985,7 +1374,7 @@ function CortexIngestionSettings({
       )}
 
       <div className="grid gap-3 md:grid-cols-2">
-        <CortexFormField label="Embedding provider" hint="Default: OpenRouter free model. NVIDIA can be selected when NVIDIA_API_KEY is present.">
+        <CortexFormField label="Embedding connector" hint="Select a connector configured in Cortex.">
           <select
             className={FIELD_CLASS}
             value={String(form.embedding_provider || '')}
@@ -3026,7 +1415,7 @@ function CortexIngestionSettings({
           </datalist>
         </CortexFormField>
 
-        <CortexFormField label="Rerank enabled" hint="Rerank improves top-N ordering after vector search; disable only for provider/key outages.">
+        <CortexFormField label="Rerank enabled" hint="Rerank improves top-N ordering after vector search.">
           <div className="flex h-[34px] items-center gap-3">
             <Toggle
               on={Boolean(form.rerank_enabled)}
@@ -3038,7 +1427,7 @@ function CortexIngestionSettings({
           </div>
         </CortexFormField>
 
-        <CortexFormField label="Rerank provider" hint="Default: NVIDIA rerank with the test key.">
+        <CortexFormField label="Rerank connector" hint="Select a connector configured in Cortex.">
           <select
             className={FIELD_CLASS}
             value={String(form.rerank_provider || '')}
@@ -3604,8 +1993,6 @@ export function SettingsView({
   project,
   appSettings,
   systemSchema,
-  providers,
-  providersConfig,
   projectRow,
   projects,
   loading,
@@ -3631,18 +2018,18 @@ export function SettingsView({
         <p className="mt-1 text-[11px] text-ink-500">
           {project ? (
             <>
-              Settings for <span className="font-mono text-ink-400">{project}</span>. Providers &amp;
-              System are <span className="text-ink-400">global</span> (every project); Workspace,
+              Settings for <span className="font-mono text-ink-400">{project}</span>. System is
+              <span className="text-ink-400"> global</span> (every project); Workspace,
               Extensions &amp; Cortex are per-project. Project autonomy controls live on the Dashboard.
             </>
           ) : (
             <>
               <span className="text-ink-400">Global configuration</span> — applies to every project.
-              Providers &amp; System are universal; Workspace, Extensions &amp; Cortex need a project.
+              System is universal; Workspace, Extensions &amp; Cortex need a project.
             </>
           )}
         </p>
-        {/* the glass sub-nav — System · Providers · Workspace · Extensions · Cortex */}
+        {/* the glass sub-nav — System · Workspace · Extensions · Cortex */}
         <nav
           role="tablist"
           aria-label="Settings sections"
@@ -3684,11 +2071,7 @@ export function SettingsView({
           </p>
         )}
 
-        {/* System + Providers are GLOBAL (universal config — they apply to every project), so
-            they render even with NO project selected (the client + backend resolve a null
-            project to the `_system` scope). Only the genuinely per-project tabs (Workspace,
-            Extensions, Cortex) keep the select-a-project gate. This breaks the first-run cyclic trap:
-            you configure provider keys + tokens before any project exists. */}
+        {/* System is global and renders without a selected project. */}
         {tab === 'system' && (
           <SystemTab
             project={project ?? ''}
@@ -3698,24 +2081,6 @@ export function SettingsView({
             client={client}
             onSaved={onSaved}
           />
-        )}
-
-        {tab === 'providers' && (
-          <ProvidersTab
-            project={project ?? ''}
-            providers={providers}
-            config={providersConfig}
-            client={client}
-            onSaved={onSaved}
-          />
-        )}
-
-        {/* License + Billing are GLOBAL (per-install, not per-project) — render with no project. */}
-        {tab === 'license' && (
-          <LicenseTab key={`license:${project ?? ''}`} project={project ?? ''} client={client} />
-        )}
-        {tab === 'billing' && (
-          <BillingTab key={`billing:${project ?? ''}`} project={project ?? ''} client={client} />
         )}
 
         {tab === 'workspace' &&

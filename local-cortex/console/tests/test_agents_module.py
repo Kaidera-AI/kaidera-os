@@ -333,7 +333,7 @@ def test_classification_helpers_pure():
 def test_service_depends_only_on_port_not_outward():
     """GUARD: `app/agents/service.py` imports NOTHING outward (no fastapi / httpx /
     subprocess / psycopg2 / asyncpg) and does NOT reach for `app.main`, the concrete
-    `app.appdb` / `app.adapters`, or the concrete `app.harness` / `app.providers` —
+    `app.appdb` / `app.adapters`, or the concrete `app.harness` —
     only the domain port (+ the injected callables).
 
     Parsed via `ast` (a name in a comment/docstring can't fool it), mirroring
@@ -363,12 +363,11 @@ def test_service_depends_only_on_port_not_outward():
         f"service.py must not import outward I/O libs, got: {sorted(top & forbidden)}"
     )
     # No reaching back into the blob, the concrete adapters/db, or the concrete
-    # harness/providers (those are injected as callables at the shell).
+    # harness (its behavior is injected as callables at the shell).
     assert "app.main" not in dotted, "service.py must not import app.main"
     assert not any(
         m == "app.appdb"
         or m == "app.harness"
-        or m == "app.providers"
         or m.startswith("app.adapters")
         for m in dotted
     ), "service.py must depend on the domain port + injected callables, not concretes"
@@ -476,38 +475,14 @@ def test_module_exports_service_and_router():
 #  `harness_js_map`). `GET /agents/{project}/{agent}/detail` only returns the
 #  CURRENT agent's resolved option set (the effective harness), so a dedicated
 #  catalog endpoint exposes the whole map sourced from `harness.HARNESS_MODELS` /
-#  `HARNESS_REASONING` (+ the live Providers catalog for the kaidera/pi
-#  catalog lanes, grouped by provider).
+#  `HARNESS_REASONING`, plus the live model catalogs advertised by each CLI.
 #
 #  Layer rule (same as the rest of the module): a PURE service shaper
-#  (`build_config_catalog`, fed the harness constants + the providers catalog
-#  groups) + the api shell. TDD'd against the REAL harness constants (they ARE
-#  the contract) + a fake catalog-groups list (no providers fetch / no DB).
+#  (`build_config_catalog`, fed the harness constants + dynamic CLI catalog
+#  rows) + the api shell. TDD'd against the REAL harness constants (they ARE
+#  the contract) + fake CLI output (no subprocess / no DB).
 # ---------------------------------------------------------------------------
 
-
-# A fake Providers catalog `groups` list (the shape app.providers.view_catalog()
-# ['groups'] returns) — the kaidera/pi (catalog) model source. Mixes a chat
-# row + an embedding row to prove only chat rows are offered as model options.
-FAKE_CATALOG_GROUPS = [
-    {
-        "provider": "anthropic",
-        "label": "Anthropic",
-        "configured": True,  # a real catalog group carries this (view_catalog); the kaidera picker now keeps only configured providers
-        "rows": [
-            {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "type": "chat"},
-            {"id": "text-embedding-x", "display_name": "Embedding X", "type": "embedding"},
-        ],
-    },
-    {
-        "provider": "openai",
-        "label": "OpenAI",
-        "configured": True,
-        "rows": [
-            {"id": "gpt-5.5", "display_name": "GPT-5.5", "type": "chat"},
-        ],
-    },
-]
 
 FAKE_PI_CATALOG_GROUPS = [
     {
@@ -550,16 +525,15 @@ def test_build_config_catalog_covers_every_harness():
     from app.agents.service import build_config_catalog
     from app import harness as harness_cfg
 
-    cat = build_config_catalog(harness_cfg, FAKE_CATALOG_GROUPS, FAKE_PI_CATALOG_GROUPS)
+    cat = build_config_catalog(harness_cfg, FAKE_PI_CATALOG_GROUPS)
 
-    # harnesses: value+label, in product order (claude-code · codex · kaidera · pi).
+    # harnesses: value+label, in product order (claude-code · codex · pi).
     assert [h["value"] for h in cat["harnesses"]] == harness_cfg.HARNESS_ORDER
     assert {h["value"] for h in cat["harnesses"]} == set(harness_cfg.HARNESSES)
     by_key = {h["value"]: h for h in cat["harnesses"]}
     assert by_key["claude-code"]["label"] == "Claude Code"
     # each harness carries its lane metadata (drives the small badge) +
     # model_source identifies each dynamic catalog protocol.
-    assert by_key["kaidera"]["model_source"] == "catalog"
     assert by_key["pi"]["model_source"] == "pi-catalog"
     assert by_key["claude-code"]["model_source"] == "claude-catalog"
     assert by_key["codex"]["model_source"] == "codex-catalog"
@@ -600,174 +574,61 @@ def test_build_config_catalog_merges_operator_added_claude_models(monkeypatch):
         lambda: {"claude-code": [{"value": "claude-future-5", "label": "Future 5"}]},
     )
 
-    cat = build_config_catalog(harness_cfg, [], [])
+    cat = build_config_catalog(harness_cfg, [])
     assert {"value": "claude-future-5", "label": "Future 5"} in cat["models_by_harness"]["claude-code"]
     assert cat["custom_models_by_harness"] == {
         "claude-code": [{"value": "claude-future-5", "label": "Future 5"}]
     }
 
 
-def test_build_config_catalog_uses_dynamic_public_default(monkeypatch):
-    """A public build exposes Kaidera AI first and still seeds a runnable model."""
+def test_build_config_catalog_uses_dynamic_external_default(monkeypatch):
+    """The first visible external harness supplies the initial model selection."""
     from app.agents.service import build_config_catalog
     from app import harness as harness_cfg
 
-    monkeypatch.setattr(harness_cfg, "visible_harness_order", lambda: ["kaidera"])
-    cat = build_config_catalog(harness_cfg, FAKE_CATALOG_GROUPS, FAKE_PI_CATALOG_GROUPS)
+    monkeypatch.setattr(harness_cfg, "visible_harness_order", lambda: ["codex"])
+    models = [{
+        "value": "gpt-current",
+        "label": "GPT Current",
+        "is_default": True,
+        "reasoning_levels": ["low", "high"],
+    }]
+    cat = build_config_catalog(
+        harness_cfg,
+        [],
+        codex_model_options=models,
+    )
 
-    assert cat["default_harness"] == "kaidera"
-    assert cat["default_model"] in {
-        row["value"] for row in cat["models_by_harness"]["kaidera"]
-    }
+    assert cat["default_harness"] == "codex"
+    assert cat["default_model"] == "gpt-current"
+    assert [
+        row["value"] for row in cat["reasoning_by_model"]["codex:gpt-current"]
+    ] == ["low", "high"]
 
 
-def test_build_config_catalog_emits_per_model_reasoning_for_kaidera():
-    """B3: the kaidera catalog lane exposes `reasoning_by_model` (the SELECTED
-    model's own discovered levels) AND carries `reasoning_levels` on each model
-    option. A non-reasoning model is OMITTED from the map (the SPA hides the
-    dropdown); a binary-toggle placeholder (["supported"]) maps to a single 'on'."""
+def test_build_config_catalog_groups_pi_models_by_external_provider():
+    """PI's own CLI catalog remains dynamic and provider-tagged for its picker."""
     from app import harness as harness_cfg
     from app.agents.service import build_config_catalog
 
-    groups = [
-        {
-            "provider": "openai",
-            "label": "OpenAI",
-            "configured": True,
-            "rows": [
-                {"id": "gpt-5.5", "display_name": "GPT-5.5", "type": "chat",
-                 "reasoning_levels": ["minimal", "low", "medium", "high", "xhigh"]},
-            ],
-        },
-        {
-            "provider": "fireworks",
-            "label": "Fireworks",
-            "configured": True,
-            "rows": [
-                # base kimi-k2 is a known non-reasoner → empty levels → OMITTED.
-                {"id": "accounts/fireworks/models/kimi-k2", "display_name": "Kimi K2",
-                 "type": "chat", "reasoning_levels": []},
-                {"id": "accounts/fireworks/models/kimi-k2-thinking", "display_name": "Kimi Thinking",
-                 "type": "chat", "reasoning_levels": ["low", "medium", "high"]},
-            ],
-        },
-        {
-            "provider": "deepseek",
-            "label": "DeepSeek",
-            "configured": True,
-            "rows": [
-                {"id": "deepseek-v4", "display_name": "DeepSeek V4", "type": "chat",
-                 "reasoning_levels": ["supported"]},
-            ],
-        },
-    ]
-    cat = build_config_catalog(harness_cfg, groups, None)
+    cat = build_config_catalog(harness_cfg, FAKE_PI_CATALOG_GROUPS)
+    rows = cat["models_by_harness"]["pi"]
+    by_value = {row["value"]: row for row in rows}
 
-    rbm = cat["reasoning_by_model"]
-    # the selected model's own levels are keyed by the (namespaced) model value.
-    assert [o["value"] for o in rbm["kaidera:openai/gpt-5.5"]] == [
-        "minimal", "low", "medium", "high", "xhigh"
-    ]
-    assert [o["value"] for o in rbm["kaidera:fireworks/accounts/fireworks/models/kimi-k2-thinking"]] == [
-        "low", "medium", "high"
-    ]
-    # the toggle-only model → a single "on" option.
-    assert [o["value"] for o in rbm["kaidera:deepseek/deepseek-v4"]] == ["on"]
-    # the non-reasoning base kimi-k2 is ABSENT (the SPA hides the dropdown).
-    assert "kaidera:fireworks/accounts/fireworks/models/kimi-k2" not in rbm
-
-    # each kaidera model option ALSO carries its raw reasoning_levels.
-    by_value = {m["value"]: m for m in cat["models_by_harness"]["kaidera"]}
-    assert by_value["openai/gpt-5.5"]["reasoning_levels"] == [
-        "minimal", "low", "medium", "high", "xhigh"
-    ]
-    assert by_value["fireworks/accounts/fireworks/models/kimi-k2"]["reasoning_levels"] == []
-
-
-def test_build_config_catalog_groups_catalog_lanes_by_provider():
-    """The kaidera/pi (catalog) lanes' models come from the Providers catalog,
-    GROUPED by provider, CHAT models only (embeddings excluded) — so the SPA can
-    render `<optgroup>`s. Each option carries its provider for the grouping."""
-    from app.agents.service import build_config_catalog
-    from app import harness as harness_cfg
-
-    cat = build_config_catalog(harness_cfg, FAKE_CATALOG_GROUPS, FAKE_PI_CATALOG_GROUPS)
-    mbh = cat["models_by_harness"]
-
-    # kaidera + pi (catalog source) get the flattened provider-grouped chat
-    # models; the embedding row is dropped.
-    own = mbh["kaidera"]
-    values = {m["value"] for m in own}
-    assert values == {
-        "anthropic/claude-opus-4-8",
-        "openai/gpt-5.5",
-        "fireworks/accounts/fireworks/models/kimi-k2p6",
-        "ollama-cloud/qwen3-coder:480b",
-    }
-    assert "text-embedding-x" not in values
-    # each option carries a provider tag for client-side <optgroup> grouping
-    by_value = {m["value"]: m for m in own}
-    assert by_value["anthropic/claude-opus-4-8"]["provider"] == "anthropic"
-    assert by_value["openai/gpt-5.5"]["provider"] == "openai"
-    assert by_value["fireworks/accounts/fireworks/models/kimi-k2p6"]["provider"] == "fireworks"
+    assert by_value["gpt-5.5"]["provider"] == "openai-codex"
+    assert (
+        by_value["fireworks/accounts/fireworks/models/kimi-k2p6"]["provider"]
+        == "fireworks"
+    )
     assert by_value["ollama-cloud/qwen3-coder:480b"]["provider"] == "ollama-cloud"
-    assert by_value["anthropic/claude-opus-4-8"]["label"] == "Claude Opus 4.8"
-
-    pi = mbh["pi"]
-    pi_by_value = {m["value"]: m for m in pi}
-    assert pi_by_value["gpt-5.5"]["provider"] == "openai-codex"
-    assert pi_by_value["fireworks/accounts/fireworks/models/kimi-k2p6"]["provider"] == "fireworks"
-    assert pi_by_value["ollama-cloud/qwen3-coder:480b"]["provider"] == "ollama-cloud"
-
-
-def test_build_config_catalog_keeps_provider_catalog_rows_ahead_of_pi_bridge():
-    """When Providers already has rows for an API provider, Kaidera AI uses those rows
-    and does not duplicate the same provider from PI's extension catalog."""
-    from app import harness as harness_cfg
-    from app.agents.service import build_config_catalog
-
-    provider_groups = [
-        {
-            "provider": "ollama-cloud",
-            "label": "Ollama Cloud",
-            "configured": True,
-            "rows": [
-                {"id": "glm-5.1:cloud", "display_name": "glm-5.1:cloud", "type": "chat"},
-            ],
-        }
-    ]
-
-    cat = build_config_catalog(harness_cfg, provider_groups, FAKE_PI_CATALOG_GROUPS)
-    own = cat["models_by_harness"]["kaidera"]
-    values = [m["value"] for m in own if m.get("provider") == "ollama-cloud"]
-
-    assert values == ["ollama-cloud/glm-5.1:cloud"]
-
-
-def test_build_config_catalog_no_provider_keys_empty_catalog_lane():
-    """No configured providers (empty catalog groups) → the catalog lanes have an
-    empty model list (the SPA shows the "add a provider key" hint), never raises."""
-    from app.agents.service import build_config_catalog
-    from app import harness as harness_cfg
-
-    cat = build_config_catalog(harness_cfg, [], [])
-    assert cat["models_by_harness"]["kaidera"] == []
-    assert cat["models_by_harness"]["pi"] == harness_cfg.HARNESS_MODELS["pi"]
-    # the fixed lanes are unaffected by an empty catalog
-    builtin_claude_count = len(harness_cfg.HARNESS_MODELS["claude-code"])
-    assert cat["models_by_harness"]["claude-code"][:builtin_claude_count] == harness_cfg.HARNESS_MODELS["claude-code"]
+    assert set(cat["models_by_harness"]) == {"claude-code", "codex", "pi"}
 
 
 @pytest.mark.asyncio
 async def test_router_config_catalog_endpoint_returns_catalog():
     """Driving the `GET /agents/{project}/config-catalog` handler directly returns
-    the full harness/model/reasoning catalog as JSON (no ASGI / live DB). The
-    providers catalog is resolved via the injected catalog source; here a fake
-    returns the scripted groups."""
+    the full external-harness model/reasoning catalog as JSON (no ASGI / live DB)."""
     from app.agents import api as agents_api
-
-    async def fake_catalog_source():
-        return FAKE_CATALOG_GROUPS
 
     async def fake_pi_catalog_source():
         return FAKE_PI_CATALOG_GROUPS
@@ -788,7 +649,6 @@ async def test_router_config_catalog_endpoint_returns_catalog():
 
     result = await agents_api.config_catalog_endpoint(
         "kaidera-os",
-        catalog_source=fake_catalog_source,
         pi_catalog_source=fake_pi_catalog_source,
         claude_catalog_source=fake_claude_catalog_source,
         codex_catalog_source=fake_codex_catalog_source,
@@ -821,7 +681,6 @@ def test_reasoning_map_namespaces_same_model_id_by_harness():
     }]
     result = build_config_catalog(
         harness_cfg,
-        [],
         pi_groups,
         claude_model_options=[],
         codex_model_options=[{
@@ -841,13 +700,8 @@ def test_reasoning_map_namespaces_same_model_id_by_harness():
 
 @pytest.mark.asyncio
 async def test_router_config_catalog_endpoint_degrades_on_catalog_failure():
-    """A providers-catalog fetch failure degrades to the FIXED lanes only (empty
-    catalog lanes) — never a 500 (the house-law graceful degrade). The fixed
-    subscription lanes still render their full model sets."""
+    """Host CLI catalog failures degrade to curated fallbacks, never a 500."""
     from app.agents import api as agents_api
-
-    async def boom_catalog_source():
-        raise RuntimeError("providers offline")
 
     async def boom_pi_catalog_source():
         raise RuntimeError("pi offline")
@@ -857,15 +711,15 @@ async def test_router_config_catalog_endpoint_degrades_on_catalog_failure():
 
     result = await agents_api.config_catalog_endpoint(
         "kaidera-os",
-        catalog_source=boom_catalog_source,
         pi_catalog_source=boom_pi_catalog_source,
         claude_catalog_source=boom_subscription_catalog_source,
         codex_catalog_source=boom_subscription_catalog_source,
     )
-    # fixed lanes intact; catalog lanes empty; no raise
+    # Every external lane keeps an outage fallback; no direct provider lane exists.
     assert result["models_by_harness"]["claude-code"]
-    assert result["models_by_harness"]["kaidera"] == []
-    assert result["models_by_harness"]["pi"]  # fixed PI fallback when host PI is down
+    assert result["models_by_harness"]["codex"]
+    assert result["models_by_harness"]["pi"]
+    assert "kaidera" not in result["models_by_harness"]
 
 
 def test_router_config_catalog_path_does_not_shadow_html_or_detail():

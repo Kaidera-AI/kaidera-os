@@ -73,21 +73,14 @@ _MODEL_LABELS: dict[str, str] = {
     for m in models
 }
 
-# Default routing for an unconfigured agent. In self-contained mode (the
-# distributable, no host CLIs) a fresh agent defaults to kaidera (the
-# in-process API lane). In dev mode it stays claude-code (the
-# proven subscription path). Both remain selectable in the dropdown; this
-# only affects the initial default for a fresh unconfigured agent.
+# Default routing for an unconfigured agent uses the first external CLI lane.
 def _resolve_default_harness() -> str:
     """The default harness for a NEW unconfigured agent.
 
-    Honors the operator's System setting `harness_default` FIRST (a real, wired control
-    — read LIVE here, validated to a known harness), and falls back to **kaidera** — the
-    default harness for EVERY AI worker and deploy (CTO directive: kaidera is what we
-    promote + the only harness whose model/thinking/auth we drive from our own Settings;
-    others are opt-in overrides). Read at CALL time (never cached at import) so a Settings
-    change takes effect without a console restart, and so the app-DB is never touched at import."""
-    mode_default = "kaidera"  # fitness:allow-literal canonical harness id (CTO default-for-all-workers, not a per-project literal)
+    Honors the operator's System setting `harness_default` first and falls back to
+    Claude Code. Read at call time so a Settings change takes effect without a
+    console restart and the app database is never touched at import."""
+    mode_default = "claude-code"
     try:
         from app import settings as settings_store
 
@@ -127,14 +120,11 @@ def _harness_resolve_config(agent: dict, override: dict) -> dict:
     # impossible pair (same coercion as main._agents_resolve_config / _chat_routing_for).
     if model is not None:
         model = harness_cfg.coerce_model(harness, model)
-    # Fill the default model when none is set: claude-code → its fixed default; kaidera
-    # → the out-of-the-box Fireworks kimi default (so the seeded onboarding Lead is runnable
-    # with zero config). Other catalog/pi lanes keep no fixed default (picker-driven).
+    # Fill the default model only for the default Claude Code lane. Other dynamic
+    # catalog lanes remain picker-driven when no model is configured.
     if model is None:
         if harness == "claude-code":
             model = _DEFAULT_MODEL
-        elif harness == "kaidera":  # fitness:allow-literal canonical harness id (own-harness runtime), not a per-project literal
-            model = harness_cfg.harness_default_model("kaidera")  # fitness:allow-literal canonical harness id arg
     return {
         "harness": harness,
         "harness_label": harness_cfg.harness_label(harness),
@@ -185,19 +175,6 @@ def get_runstate_store(request: Request) -> Any:
     durable run_state/run_span store chat history reads from. None when the app-DB
     is down (the history route then degrades to an empty conversation)."""
     return getattr(request.app.state, "runstate", None)
-
-
-async def _live_catalog_groups() -> list:
-    """Fetch the live Providers & Models catalog `groups` (the kaidera
-    catalog-lane model source) — the SAME cached source `main` feeds the HTML
-    Configure card (`providers.view_catalog(get_catalog())['groups']`). Imported
-    lazily so the agents shell stays free of a module-load coupling to providers.
-    `get_catalog()` is cached + never raises; an unexpected failure still degrades
-    to [] (fixed lanes only) at the endpoint."""
-    from app import providers as providers_catalog
-
-    catalog = await providers_catalog.get_catalog()
-    return providers_catalog.view_catalog(catalog).get("groups", [])
 
 
 def _harness_base_url() -> str:
@@ -256,14 +233,6 @@ async def _live_codex_model_options() -> list:
     return await codex_catalog.list_codex_model_options()
 
 
-def get_catalog_source(request: Request) -> Callable[[], Awaitable[list]]:
-    """Resolve the providers CATALOG source — an async callable returning the
-    catalog `groups`. Defaults to the live cached providers layer; constructed at
-    this seam so the route depends on a callable (the tests inject a fake), never
-    the concrete providers module."""
-    return _live_catalog_groups
-
-
 def get_pi_catalog_source(request: Request) -> Callable[[], Awaitable[list]]:
     """Resolve the host PI catalog source. Tests inject a fake callable."""
     return _live_pi_catalog_groups
@@ -318,7 +287,6 @@ async def _safe_read(source: Callable[[], Awaitable[list]]) -> list:
 @router.get("/{project}/config-catalog")
 async def config_catalog_endpoint(
     project: str,
-    catalog_source: Callable[[], Awaitable[list]] = Depends(get_catalog_source),
     pi_catalog_source: Callable[[], Awaitable[list]] = Depends(get_pi_catalog_source),
     claude_catalog_source: Callable[[], Awaitable[list]] = Depends(get_claude_catalog_source),
     codex_catalog_source: Callable[[], Awaitable[list]] = Depends(get_codex_catalog_source),
@@ -330,16 +298,8 @@ async def config_catalog_endpoint(
     agent's resolved option set (the effective harness); the SPA needs EVERY
     harness's option sets up-front to repopulate the model/reasoning dropdowns
     CLIENT-SIDE when the harness <select> changes (no per-keystroke round-trip).
-    Sourced from `harness.HARNESS_MODELS` / `HARNESS_REASONING` (the fixed
-    subscription lanes) + the live Providers catalog (the own-harness lane) + the host PI
-    catalog (`pi --list-models` via harness-service). Includes `project` in the
-    payload.
-
-    Graceful-degrade (house law): a providers-catalog fetch failure degrades to the
-    FIXED lanes only (empty kaidera catalog, fixed PI fallback) — never a 500.
-    `project` is accepted for URL-shape symmetry with the rest of the agents surface;
-    the catalog itself is project-independent today (a future per-project provider
-    scoping can use it).
+    Sourced from the installed Claude Code, Codex, and PI CLIs, with curated
+    outage fallbacks. Includes `project` in the payload.
 
     PATH NOTE (collision-free, strictly additive): the TWO-segment
     `/agents/{project}/config-catalog` leaf is registered on this router (mounted
@@ -349,15 +309,13 @@ async def config_catalog_endpoint(
     async def _read(source: Callable[[], Awaitable[list]]) -> list:
         return await _safe_read(source)
 
-    catalog_groups, pi_catalog_groups, claude_models, codex_models = await asyncio.gather(
-        _read(catalog_source),
+    pi_catalog_groups, claude_models, codex_models = await asyncio.gather(
         _read(pi_catalog_source),
         _read(claude_catalog_source),
         _read(codex_catalog_source),
     )
     catalog = build_config_catalog(
         harness_cfg,
-        catalog_groups,
         pi_catalog_groups,
         claude_models,
         codex_models,
@@ -492,7 +450,6 @@ __all__ = [
     "config_catalog_endpoint",
     "get_operational_store",
     "get_roster_source",
-    "get_catalog_source",
     "get_claude_catalog_source",
     "get_codex_catalog_source",
     "build_service",

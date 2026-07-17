@@ -21,7 +21,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check public-source boundary
-        run: bash scripts/fitness/check-oss-package-hygiene.sh
+        run: |
+          bash scripts/fitness/check-community-source-boundary.sh
+          bash scripts/fitness/check-oss-package-hygiene.sh
       - name: Validate public project examples
         run: |
           python3 redistributable/scripts/validate-cortex-project-config.py redistributable/examples/blank.project.json
@@ -78,8 +80,7 @@ jobs:
             local-cortex/console/app/auth.py \
             local-cortex/console/app/harness_runner.py \
             local-cortex/console/app/orchestrator.py \
-            local-cortex/console/app/settings.py \
-            local-cortex/console/app/skill_embed.py
+            local-cortex/console/app/settings.py
       - name: Test Kaidera OS Console
         working-directory: local-cortex/console
         run: python -m pytest -q

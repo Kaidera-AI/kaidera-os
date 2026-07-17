@@ -22,7 +22,6 @@ import type {
   GraphPayload,
   HistoryPayload,
   Project,
-  ProvidersCatalog,
   Resource,
   RunBoard,
   RunTranscript,
@@ -48,9 +47,6 @@ const EMPTY_GRAPH: GraphPayload = {
 const settingsClient: SettingsWriteClient = {
   setAppSetting: vi.fn().mockResolvedValue({ project: 'kaidera-os', settings: {}, store_connected: true, ok: true }),
   setAppSettings: vi.fn().mockResolvedValue({ project: 'kaidera-os', settings: {}, store_connected: true, ok: true }),
-  addCustomProvider: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, added: null, error: null, custom_providers: [] }),
-  deleteCustomProvider: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, removed: false, error: null, custom_providers: [] }),
-  providerKeyTest: vi.fn().mockResolvedValue({ project: 'kaidera-os', ok: true, detail: 'ok', status: 'ok', label: '' }),
   setWorkspace: vi.fn().mockResolvedValue({ project: 'kaidera-os', project_key: 'kaidera-os', ok: true, repo_root: null, previous_repo_root: null, error: null }),
   cortexConfig: vi.fn().mockResolvedValue({
     ok: true,
@@ -149,10 +145,6 @@ const systemSchema: Resource<SystemSchema> = res<SystemSchema>({
   project: 'kaidera-os',
   groups: [],
   store_connected: true,
-})
-const providers: Resource<ProvidersCatalog> = res<ProvidersCatalog>({
-  project: 'kaidera-os',
-  providers: [],
 })
 const projectRow: Project = { project_key: 'kaidera-os', display_name: 'Kaidera OS', status: 'active' }
 
@@ -274,7 +266,6 @@ function renderMainArea() {
       usage={usage}
       appSettings={appSettings}
       systemSchema={systemSchema}
-      providers={providers}
       projectRow={projectRow}
       settingsClient={settingsClient}
       onSettingsSaved={() => {}}
@@ -308,7 +299,6 @@ function renderWithAgent(agent: string) {
       usage={usage}
       appSettings={appSettings}
       systemSchema={systemSchema}
-      providers={providers}
       projectRow={projectRow}
       settingsClient={settingsClient}
       onSettingsSaved={() => {}}
@@ -400,7 +390,6 @@ describe('MainArea switcher', () => {
         usage={usage}
         appSettings={appSettings}
         systemSchema={systemSchema}
-        providers={providers}
         projectRow={projectRow}
         settingsClient={settingsClient}
         onSettingsSaved={() => {}}

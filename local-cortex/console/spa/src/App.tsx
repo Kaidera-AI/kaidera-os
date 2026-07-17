@@ -36,8 +36,6 @@ import type {
   DispatchActivity,
   DispatchBoard,
   Project,
-  ProvidersCatalog,
-  ProvidersConfig,
   RunBoard,
   SkillsPayload,
   SystemSchema,
@@ -168,9 +166,7 @@ export default function App() {
   const onSkillsChanged = useCallback(() => {
     skillsRes.refetch()
   }, [skillsRes])
-  // NOT project-gated: app_settings, the System schema, and the provider/model catalog are
-  // all GLOBAL (the client resolves a null project to the `_system` scope), so they load on a
-  // fresh install before any project exists — required for the keyless first-run onboarding.
+  // App settings and the system schema are global, so they load before a project exists.
   const appSettingsRes = useResource<AppSettings>(
     (signal) => api.appSettings(project ?? '', signal),
     [project],
@@ -209,21 +205,6 @@ export default function App() {
     [project],
     { pollMs: POLL_SETTINGS },
   )
-  const providersRes = useResource<ProvidersCatalog>(
-    (signal) => api.providers(project ?? '', signal),
-    [project],
-    { pollMs: POLL_SETTINGS },
-  )
-  // The configured/active providers (the Providers control surface — key-presence +
-  // Test target per provider). Degrades to null on a stale-backend 404.
-  // NOT project-gated: provider keys are GLOBAL (the client resolves a null project to
-  // the `_system` scope), so the preconfigured-providers list loads + keys can be added/
-  // rotated during first-run setup, before any project exists.
-  const providersConfigRes = useResource<ProvidersConfig>(
-    (signal) => api.providersConfig(project ?? '', signal),
-    [project],
-    { pollMs: POLL_SETTINGS },
-  )
   // The selected project's registry row (for the Cortex + Workspace tabs —
   // repo_root / status). Reuses the already-fetched projects list (no extra call).
   const projectRow = useMemo(
@@ -237,10 +218,8 @@ export default function App() {
   const onSettingsSaved = useCallback(() => {
     appSettingsRes.refetch()
     systemSchemaRes.refetch()
-    providersConfigRes.refetch()
-    providersRes.refetch() // the model catalog too — so a key-add (or Refresh) reflects new models
     projectsRes.refetch()
-  }, [appSettingsRes, systemSchemaRes, providersConfigRes, providersRes, projectsRes])
+  }, [appSettingsRes, systemSchemaRes, projectsRes])
 
   // After an in-pane per-agent config save (the relocated config editor in AgentDetail):
   // refetch the agents catalog so a designation change REGROUPS the agents column
@@ -371,10 +350,7 @@ export default function App() {
 
         {onboarding ? (
           <OnboardingView
-            providersConfig={providersConfigRes.data}
-            settingsClient={api}
             registrationClient={api}
-            onSettingsSaved={onSettingsSaved}
             onProjectCreated={onProjectRegistered}
           />
         ) : (
@@ -395,8 +371,6 @@ export default function App() {
             kpis={kpisRes}
             appSettings={appSettingsRes}
             systemSchema={systemSchemaRes}
-            providers={providersRes}
-            providersConfig={providersConfigRes}
             projectRow={projectRow}
             projects={projects}
             settingsClient={api}

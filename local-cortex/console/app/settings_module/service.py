@@ -26,9 +26,8 @@ LAYER RULE (arrows point inward, ratified design §3): this module depends ONLY 
 `domain.ports.OperationalStorePort` (the app-DB operational surface). It imports
 NOTHING outward (no fastapi / httpx / subprocess / psycopg2 / asyncpg) and never
 reaches back into `app.main`, the concrete `app.appdb` / `app.adapters`, or the
-legacy `app.settings` facade. The schema/form rendering + JSON seed/fallback +
-the custom-providers list stay in `app.settings` (they are UI/schema and fallback
-concerns, not port logic); this module owns the port-backed config logic the
+legacy `app.settings` facade. Schema rendering and JSON fallback stay in
+`app.settings`; this module owns the port-backed config logic the
 System page + the Configure card + the agents catalog all sit on.
 
 The logic is lifted 1:1 from `settings.normalize_designation` /
@@ -49,7 +48,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from app.domain import designation as _designation
-from app.domain.ports import CatalogModel, OperationalStorePort
+from app.domain.ports import OperationalStorePort
 
 # The masked placeholder a SET secret renders as in the System-schema JSON (the
 # raw secret value NEVER leaves the server — only `is_set` + this marker). Kept
@@ -64,17 +63,6 @@ SECRET_MASK = "•••• set"
 # `options` list (static) and/or an `options_source` (resolved client-side from live
 # data, e.g. the registered projects).
 SCHEMA_FIELD_TYPES = ("text", "number", "bool", "secret", "readonly", "select")
-
-# Per-model provenance → a short human "freshness" label for the Providers JSON.
-# Mirrors `providers._SOURCE_TAG` (kept here, not imported, so the service stays
-# pure): "live" = fetched live; "merged" = live row + OpenRouter supplement filled
-# gaps; "supplement" = the row's data came from the supplement. Anything else → the
-# raw source string verbatim (honest, never fabricated).
-_FRESHNESS_LABEL = {
-    "live": "live",
-    "merged": "live + supplement",
-    "supplement": "supplement",
-}
 
 # The two valid designation values + the override-field tuple. DE-FORKED: these now
 # come from `app.domain.designation` (the single owner) and are re-exported here so
@@ -166,7 +154,7 @@ def build_system_schema(
 
     PURE: takes the raw schema + a values map, returns the JSON dict. No I/O, no
     `app.settings` import — the caller injects both. The secret-masking here is the
-    contract the providers/keys tab depends on."""
+    contract every settings client depends on."""
     vals = values if isinstance(values, dict) else {}
     groups_out: list[dict[str, Any]] = []
     for g in schema or []:
@@ -216,116 +204,6 @@ def build_system_schema(
             }
         )
     return {"groups": groups_out}
-
-
-# ---------------------------------------------------------------------------
-#  Providers JSON contract (pure) — the live model catalog grouped by provider.
-#
-#  The SPA's Providers&Models tab needs the catalog grouped by provider with the
-#  per-model fields it renders. The api shell fetches the live catalog via the
-#  `ModelCatalogPort` (which never raises — degrades to []), then this pure
-#  transform groups the flat `CatalogModel`s into the documented shape.
-# ---------------------------------------------------------------------------
-
-
-def _freshness_for(source: Optional[str]) -> str:
-    """Map a model's provenance `source` to a short human freshness label
-    (live / live + supplement / supplement), else the raw source verbatim."""
-    s = (source or "live").strip().lower()
-    return _FRESHNESS_LABEL.get(s, s)
-
-
-def build_providers_config(
-    built_ins: list[dict[str, Any]], customs: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Shape the Providers tab's CONFIG view: the configured/active providers with
-    per-provider key-presence + status, NEVER a raw key.
-
-    `built_ins` is the list of preconfigured-provider dicts the shell resolves from
-    the catalog/store (each `{name, label, key_is_set, testable, key_field?}`);
-    `customs` is the MASKED custom-provider list (`app.settings.view_custom_providers`
-    shape: `{id, name, base_url, has_key, key_display}` — never a raw api_key).
-
-    Returns `{providers:[{name, label, key_is_set, is_custom, testable, provider_ref,
-    key_field?, base_url?}]}` — the built-ins first (in the order given), then the
-    custom providers. `provider_ref` is the canonical TEST / write target: a built-in
-    provider's secret-key field (e.g. `anthropic_api_key`), or `custom:<id>` for a
-    custom one. PURE: takes the two lists, returns the JSON dict; no I/O, no
-    `app.settings`/`app.providers` import (the shell injects both).
-
-    MASKING CONTRACT (load-bearing): the builder emits ONLY the documented
-    presence/label/ref fields — a raw key on an input dict is dropped, never echoed
-    (a test asserts no raw key ever appears)."""
-    rows: list[dict[str, Any]] = []
-
-    for b in built_ins or []:
-        name = str(b.get("name") or "")
-        key_field = b.get("key_field")
-        row: dict[str, Any] = {
-            "name": name,
-            "label": str(b.get("label") or name.title() or name),
-            "key_is_set": bool(b.get("key_is_set")),
-            "is_custom": False,
-            "testable": bool(b.get("testable")),
-            # the canonical write/test target for a built-in is its secret-key field
-            "provider_ref": str(key_field) if key_field else name,
-        }
-        if key_field:
-            row["key_field"] = str(key_field)
-        # Pre-filled endpoint (read-only) so the operator sees the URL is already
-        # built in and only needs to paste a key. Absent for SDK/non-compat providers.
-        b_base = b.get("base_url")
-        if b_base:
-            row["base_url"] = str(b_base)
-        rows.append(row)
-
-    for c in customs or []:
-        cid = str(c.get("id") or "")
-        name = str(c.get("name") or cid)
-        rows.append(
-            {
-                "name": name,
-                "label": name,
-                "key_is_set": bool(c.get("has_key")),
-                "is_custom": True,
-                # a custom provider is testable iff it has a base URL + a key
-                "testable": bool(c.get("has_key")) and bool(c.get("base_url")),
-                "provider_ref": f"custom:{cid}",
-                "base_url": str(c.get("base_url") or ""),
-            }
-        )
-
-    return {"providers": rows}
-
-
-def group_catalog_models(models: list[CatalogModel]) -> dict[str, Any]:
-    """Group a flat `CatalogModel` list by provider into the Providers JSON:
-    `{providers:[{name, models:[{model,type,reasoning_tiers,input_price_per_mtok,
-    output_price_per_mtok,context_window,source,freshness}]}]}`.
-
-    Provider order follows first-seen (the adapter already emits a stable per-
-    provider order). PURE: no fetch, no raise — an empty list yields
-    `{providers: []}` (the graceful-degrade target shape)."""
-    by_provider: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for m in models or []:
-        name = getattr(m, "provider", "") or ""
-        if name not in by_provider:
-            by_provider[name] = {"name": name, "models": []}
-            order.append(name)
-        by_provider[name]["models"].append(
-            {
-                "model": getattr(m, "id", "") or "",
-                "type": getattr(m, "type", "chat") or "chat",
-                "reasoning_tiers": list(getattr(m, "reasoning_levels", []) or []),
-                "input_price_per_mtok": getattr(m, "price_in_per_mtok", None),
-                "output_price_per_mtok": getattr(m, "price_out_per_mtok", None),
-                "context_window": getattr(m, "context_window", None),
-                "source": getattr(m, "source", "live") or "live",
-                "freshness": _freshness_for(getattr(m, "source", "live")),
-            }
-        )
-    return {"providers": [by_provider[name] for name in order]}
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +417,4 @@ __all__ = [
     "override_store_key",
     "clean_override",
     "build_system_schema",
-    "group_catalog_models",
-    "build_providers_config",
 ]

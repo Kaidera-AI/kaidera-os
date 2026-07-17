@@ -56,26 +56,3 @@ def fake_cortex():
 @pytest.fixture
 def routing_stub():
     return lambda agent, project: ("pi", "gpt-5.3-codex-spark", "high")
-
-
-@pytest.fixture
-def ed25519_public_license(monkeypatch):
-    """Issue an Ed25519-signed license + wire the app's verify key — the REAL platform
-    grant path. The PUBLIC edition rejects forgeable HMAC (only platform-signed Ed25519
-    grants verify), so any public-edition test that expects a grant to UNLOCK something
-    must sign with Ed25519. Returns a callable `issue(customer, **generate_license_kwargs)`."""
-    from app import license as lic
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    def _issue(customer, **kw):
-        priv = Ed25519PrivateKey.generate()
-        pub_pem = priv.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode("ascii")
-        monkeypatch.setenv("KAIDERA_OS_LICENSE_VERIFY_KEY", pub_pem)
-        tok = lic.generate_license(customer, alg="ed25519", ed25519_private_key=priv, **kw)
-        monkeypatch.setenv("KAIDERA_OS_LICENSE_KEY", tok)
-        return tok
-
-    return _issue

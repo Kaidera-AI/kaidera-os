@@ -2,7 +2,7 @@
 # LaunchAgent entry point for Beat's 25-minute heartbeat.
 #
 # launchd does not inherit the operator shell environment. Source the canonical
-# local Cortex .env file before invoking Python so provider keys and the rest of
+# local Cortex .env file before invoking Python so service configuration and
 # the Cortex config have one source of truth.
 
 set -euo pipefail

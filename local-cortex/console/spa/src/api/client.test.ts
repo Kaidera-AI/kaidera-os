@@ -160,110 +160,6 @@ describe('api client settings WRITE methods (Track C)', () => {
     expect(out.ok).toBe(true)
   })
 
-  it('licenseActivate POSTs the org login token to /settings/{project}/license/activate', async () => {
-    const fetchFn = mockFetchOnce({
-      project: 'kaidera-os',
-      action: 'activate',
-      ok: true,
-      status_code: 200,
-      error: null,
-      stored: true,
-      grant_valid: true,
-      install_id: 'install-1',
-      machine_fp: 'fp',
-      revoked: false,
-      latest_release: null,
-      customer: 'Acme',
-    })
-    const out = await api.licenseActivate('kaidera-os', 'session-token')
-    const { path, init, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/license/activate')
-    expect(init.method).toBe('POST')
-    expect(body).toEqual({ org_login_token: 'session-token' })
-    expect(out.ok).toBe(true)
-    expect(out.customer).toBe('Acme')
-  })
-
-  it('licenseLogin POSTs console credentials to /settings/{project}/license/login', async () => {
-    const fetchFn = mockFetchOnce({
-      project: 'kaidera-os',
-      action: 'login',
-      ok: true,
-      status_code: 200,
-      error: null,
-      stored: true,
-      grant_valid: true,
-      install_id: 'install-1',
-      machine_fp: null,
-      revoked: false,
-      latest_release: null,
-      customer: 'Acme',
-      org_id: 'org_1',
-      expires_at: '2026-07-04T00:00:00Z',
-      scopes: ['license:read'],
-      manifold_enabled: true,
-      manifold_key_stored: true,
-    })
-    const out = await api.licenseLogin('kaidera-os', {
-      email: 'ops@example.com',
-      password: 'secret',
-      mfa_code: '123456',
-    })
-    const { path, init, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/license/login')
-    expect(init.method).toBe('POST')
-    expect(body).toEqual({ email: 'ops@example.com', password: 'secret', mfa_code: '123456' })
-    expect(out.action).toBe('login')
-    expect(out.manifold_key_stored).toBe(true)
-  })
-
-  it('licenseHeartbeat POSTs an empty body to /settings/{project}/license/heartbeat', async () => {
-    const fetchFn = mockFetchOnce({
-      project: 'kaidera-os',
-      action: 'heartbeat',
-      ok: false,
-      status_code: null,
-      error: 'no valid license grant to heartbeat',
-      stored: false,
-      grant_valid: false,
-      install_id: null,
-      machine_fp: null,
-      revoked: false,
-      latest_release: null,
-      customer: null,
-    })
-    const out = await api.licenseHeartbeat('kaidera-os')
-    const { path, init, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/license/heartbeat')
-    expect(init.method).toBe('POST')
-    expect(body).toEqual({})
-    expect(out.ok).toBe(false)
-    expect(out.error).toContain('no valid')
-  })
-
-  it('licenseRestore POSTs an empty body to /settings/{project}/license/restore', async () => {
-    const fetchFn = mockFetchOnce({
-      project: 'kaidera-os',
-      action: 'restore',
-      ok: true,
-      status_code: 200,
-      error: null,
-      stored: true,
-      grant_valid: true,
-      install_id: 'install-1',
-      machine_fp: null,
-      revoked: false,
-      latest_release: null,
-      customer: 'Acme',
-    })
-    const out = await api.licenseRestore('kaidera-os')
-    const { path, init, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/license/restore')
-    expect(init.method).toBe('POST')
-    expect(body).toEqual({})
-    expect(out.action).toBe('restore')
-  })
-
   it('setAgentConfig POSTs {override} to /settings/{project}/agents/{agent}/config', async () => {
     const fetchFn = mockFetchOnce({
       project: 'kaidera-os',
@@ -315,7 +211,7 @@ describe('api client settings WRITE methods (Track C)', () => {
   })
 })
 
-describe('api client settings step-3b methods (System / Providers / Workspace tabs)', () => {
+describe('api client settings methods (System / Workspace / Cortex tabs)', () => {
   function lastPost(fetchFn: ReturnType<typeof vi.fn>) {
     const [path, init] = fetchFn.mock.lastCall as [string, RequestInit]
     return { path, init, body: JSON.parse(String(init.body)) }
@@ -328,27 +224,6 @@ describe('api client settings step-3b methods (System / Providers / Workspace ta
     expect(out.groups).toEqual([])
   })
 
-  it('providers GETs /settings/{project}/providers', async () => {
-    const fetchFn = mockFetchOnce({ project: 'kaidera-os', providers: [] })
-    const out = await api.providers('kaidera-os')
-    expect(fetchFn).toHaveBeenLastCalledWith('/settings/kaidera-os/providers', expect.anything())
-    expect(out.providers).toEqual([])
-  })
-
-  it('providersConfig GETs /settings/{project}/providers/config', async () => {
-    const fetchFn = mockFetchOnce({
-      project: 'kaidera-os',
-      store_connected: true,
-      providers: [
-        { name: 'anthropic', label: 'Anthropic', key_is_set: true, is_custom: false, testable: true, provider_ref: 'anthropic_api_key', key_field: 'anthropic_api_key' },
-      ],
-    })
-    const out = await api.providersConfig('kaidera-os')
-    expect(fetchFn).toHaveBeenLastCalledWith('/settings/kaidera-os/providers/config', expect.anything())
-    expect(out.providers[0].key_is_set).toBe(true)
-    expect(out.providers[0].provider_ref).toBe('anthropic_api_key')
-  })
-
   it('setAppSettings POSTs the BATCH {settings:{…}} (save-only-changed-keys)', async () => {
     const fetchFn = mockFetchOnce({ project: 'kaidera-os', settings: { a: 1, b: 2 }, store_connected: true, ok: true })
     await api.setAppSettings('kaidera-os', { a: 1, b: 2 })
@@ -356,30 +231,6 @@ describe('api client settings step-3b methods (System / Providers / Workspace ta
     expect(path).toBe('/settings/kaidera-os/app')
     expect(init.method).toBe('POST')
     expect(body).toEqual({ settings: { a: 1, b: 2 } })
-  })
-
-  it('addCustomProvider POSTs name/base_url/api_key to /custom-providers', async () => {
-    const fetchFn = mockFetchOnce({ project: 'kaidera-os', ok: true, added: 'X', error: null, custom_providers: [] })
-    await api.addCustomProvider('kaidera-os', { name: 'X', base_url: 'u', api_key: 'k' })
-    const { path, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/custom-providers')
-    expect(body).toEqual({ name: 'X', base_url: 'u', api_key: 'k' })
-  })
-
-  it('deleteCustomProvider POSTs {id} to /custom-providers/delete', async () => {
-    const fetchFn = mockFetchOnce({ project: 'kaidera-os', ok: true, removed: true, error: null, custom_providers: [] })
-    await api.deleteCustomProvider('kaidera-os', 'together-ai')
-    const { path, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/custom-providers/delete')
-    expect(body).toEqual({ id: 'together-ai' })
-  })
-
-  it('providerKeyTest POSTs the probe body to /provider-key-test', async () => {
-    const fetchFn = mockFetchOnce({ project: 'kaidera-os', ok: true, detail: 'ok', status: 'ok', label: 'A' })
-    await api.providerKeyTest('kaidera-os', { provider: 'anthropic_api_key', use_stored: true })
-    const { path, body } = lastPost(fetchFn)
-    expect(path).toBe('/settings/kaidera-os/provider-key-test')
-    expect(body).toEqual({ provider: 'anthropic_api_key', use_stored: true })
   })
 
   it('setWorkspace POSTs {repo_root} to /workspace', async () => {

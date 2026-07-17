@@ -60,8 +60,6 @@ interface ChatComposerProps {
   threadTurns?: number
   /** True when the selected harness/model can read image attachments. */
   imageAttachmentsEnabled?: boolean
-  /** False when no provider key is set — disables Send + shows a hint. Defaults true. */
-  ready?: boolean
 }
 
 export function ChatComposer({
@@ -73,7 +71,6 @@ export function ChatComposer({
   stop,
   threadTurns = 0,
   imageAttachmentsEnabled = false,
-  ready = true,
 }: ChatComposerProps) {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -263,7 +260,7 @@ export function ChatComposer({
           ref={taRef}
           rows={2}
           value={value}
-          disabled={sending || !ready}
+          disabled={sending}
           onChange={(e) => setValue(e.target.value)}
           onInput={grow}
           onKeyDown={onKeyDown}
@@ -357,7 +354,7 @@ export function ChatComposer({
             <button
               type="button"
               onClick={submit}
-              disabled={sending || !ready}
+              disabled={sending}
               className={cx(
                 'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
                 sending
@@ -374,13 +371,6 @@ export function ChatComposer({
         </div>
       </div>
 
-      {/* Soft provider-readiness hint (T1.7): when no provider key is configured, Send is
-          disabled and we explain how to unblock — cosmetic + non-blocking otherwise. */}
-      {!ready && (
-        <p className="mt-2 px-1 text-[11px] text-ink-500">
-          Add a provider key in Settings → Providers to start chatting.
-        </p>
-      )}
     </div>
   )
 }

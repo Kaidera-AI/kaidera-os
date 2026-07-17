@@ -28,7 +28,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
-from app import providers as providers_catalog
+from app import community_models as providers_catalog
 from app.analytics.service import AnalyticsService, format_tokens
 from app.domain.ports import OperationalStorePort
 

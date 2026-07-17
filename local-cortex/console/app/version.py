@@ -8,4 +8,4 @@ version delivered.
 Scheme: ``0.1.<iteration>`` while pre-1.0 — bump the patch on each shipped change.
 """
 
-__version__ = "0.1.231"
+__version__ = "0.1.233"

@@ -4,8 +4,8 @@
   /projects/{key}/runtime, falling back to /roster) and, per agent, three
   editable dropdowns:
 
-    - harness   : claude-code · codex · kaidera · pi
-    - model     : populated PER harness from each CLI/provider catalog, with
+    - harness   : claude-code · codex · pi
+    - model     : populated per harness from each CLI catalog, with
                   curated fallbacks only when discovery is unavailable. Changing
                   the harness re-populates
                   the model + reasoning dropdowns CLIENT-SIDE from cfg_harness_map
@@ -47,12 +47,11 @@
     cfg_harness_options : [{value,label}] for the harness <select>
     cfg_harness_map     : JSON str → {harnesses:{...}, catalog:[...]} for the
                           client-side dropdown repopulation
-    cfg_catalog_total   : model count in the Providers catalog (for the note)
 #}
 <div class="set-inner">
   <div class="set-page on" id="setpage-configure">
     <div class="set-page-h">Configure</div>
-    <div class="set-page-sub">Per-agent <b>harness</b>, <b>model</b>, and <b>reasoning/effort</b> for <b>{{ selected_key or "Kaidera OS" }}</b>. Each agent's <b>effective</b> config is its registry value (from the live runtime) overlaid with any console-local override. The model list changes with the harness — <b>kaidera</b>/<b>pi</b> pull from the <b>Providers&nbsp;&amp;&nbsp;Models</b> catalog ({{ cfg_catalog_total }} models).</div>
+    <div class="set-page-sub">Per-agent <b>harness</b>, <b>model</b>, and <b>reasoning/effort</b> for <b>{{ selected_key or "Kaidera OS" }}</b>. Each agent's effective config is its registry value overlaid with any console-local override. Model and effort choices are discovered from the installed <b>Claude Code</b>, <b>Codex</b>, and <b>PI</b> CLIs.</div>
 
     {# console-local overrides — fast display overlay; the registry is NOT written on save #}
     <div class="set-banner">
@@ -167,7 +166,7 @@
             <span class="cfg-lbl">Model {% if a.ov_model %}<span class="cfg-dot" title="console-local override"></span>{% endif %}</span>
             <select class="cfg-select" name="model" data-role="model">
               {% if a.model_is_catalog %}
-                {# kaidera/pi → grouped provider catalog #}
+                {# Dynamic CLI catalog, grouped by the harness's source labels. #}
                 {% for g in a.model_groups %}
                 <optgroup label="{{ g.label }}">
                   {% for m in g.models %}
@@ -176,7 +175,7 @@
                 </optgroup>
                 {% endfor %}
               {% else %}
-                {# subscription lane → fixed per-harness set #}
+                {# Flat per-harness model set. #}
                 {% for m in a.model_options %}
                 <option value="{{ m.value }}" {{ 'selected' if a.model == m.value else '' }}>{{ m.label }}</option>
                 {% endfor %}
@@ -227,13 +226,13 @@
   </div>
 </div>
 
-{# Static harness→{models,reasoning}+catalog map for client-side repopulation. #}
+{# Static harness-to-model/reasoning map for client-side repopulation. #}
 <script id="cfg-harness-map" type="application/json">{{ cfg_harness_map | safe }}</script>
 <script>
   // Configure (R4c): when an agent's HARNESS <select> changes, rebuild that
   // row's MODEL + REASONING <select> options from the static map — no server
   // round-trip. The map carries the fixed per-harness model sets, the per-
-  // harness reasoning levels, and the provider catalog (for kaidera/pi).
+  // harness reasoning levels, including model-specific discovered ladders.
   (function () {
     var raw = document.getElementById("cfg-harness-map");
     if (!raw) return;
@@ -293,10 +292,10 @@
           if (og.children.length) sel.appendChild(og);
         });
         if (!sel.children.length) {
-          // No catalog models (no provider keys set) → a single hint option.
+          // No models discovered from the installed harness CLI.
           var hint = document.createElement("option");
           hint.value = "";
-          hint.textContent = "— configure a provider key in Settings —";
+          hint.textContent = "— no models discovered —";
           sel.appendChild(hint);
         }
       } else {

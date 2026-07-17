@@ -184,13 +184,6 @@ describe('App project selection', () => {
         if (/^\/settings\/(?:_system|kaidera-os)\/system-schema$/.test(path)) {
           return Promise.resolve(jsonResponse({ project: 'kaidera-os', groups: [], store_connected: true }))
         }
-        if (/^\/settings\/(?:_system|kaidera-os)\/providers$/.test(path)) {
-          return Promise.resolve(jsonResponse({ project: 'kaidera-os', providers: [] }))
-        }
-        if (/^\/settings\/(?:_system|kaidera-os)\/providers\/config$/.test(path)) {
-          return Promise.resolve(jsonResponse({ project: 'kaidera-os', providers: [], store_connected: true }))
-        }
-
         unhandled.push(path)
         return Promise.resolve(jsonResponse({ error: 'unhandled' }, { status: 404 }))
       }),

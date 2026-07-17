@@ -28,7 +28,7 @@ import { supportsVisionAttachments } from './attachmentCapabilities'
 import type { AgentConfigEditorClient } from './AgentConfigEditor'
 import type { DeregisterClient } from './RegistrationForms'
 import type { AgentDetail as AgentDetailT, RunBoard, RunRow } from '../api'
-import type { ProvidersConfig, UsageBreakdown } from '../api/types'
+import type { UsageBreakdown } from '../api/types'
 
 /**
  * The default in-pane config-editor client — built from the real `api`. The editor's
@@ -65,12 +65,6 @@ interface AgentDetailProps {
   registrationClient?: DeregisterClient
   /** Called after a successful deregister — the shell refetches the roster (the agent disappears). */
   onAgentRemoved?: () => void
-  /**
-   * The configured/active providers (key-presence per provider). Used to softly gate the chat
-   * composer (T1.7): when no key is set, Send is disabled with a hint. Optional + null-safe —
-   * when absent (or empty), the composer is treated as ready so it NEVER falsely blocks.
-   */
-  providersConfig?: ProvidersConfig | null
   /**
    * Rename the seeded "lead" worker (T1.6). When provided AND the selected agent is `lead`, the
    * header shows a small Rename affordance; on save with a non-blank name this is called with the
@@ -175,7 +169,6 @@ export function AgentDetail({
   onConfigSaved,
   registrationClient,
   onAgentRemoved,
-  providersConfig,
   onRenameLead,
   repoRoot,
 }: AgentDetailProps) {
@@ -248,12 +241,6 @@ export function AgentDetail({
     cfg?.harness ?? head?.harness,
     cfg?.model ?? head?.model,
   )
-
-  // Soft provider-readiness gate for the composer (T1.7). Derived to NEVER falsely block:
-  // with no providersConfig (resource absent/loading) OR at least one key set, chat is ready;
-  // only a loaded config with zero keys disables Send (and shows the hint).
-  const chatReady =
-    !providersConfig || (providersConfig.providers ?? []).some((p) => p.key_is_set)
 
   // Rename-the-seeded-lead affordance (T1.6) — local open/value state for the inline editor
   // shown in the header only when this is the seeded `lead` worker and a handler is wired.
@@ -652,7 +639,6 @@ export function AgentDetail({
             reply={chat.reply}
             onSend={chat.send}
             stop={chat.stop}
-            ready={chatReady}
             imageAttachmentsEnabled={imageAttachmentsEnabled}
             // Prior turns of this conversation threaded into context (multi-turn chat,
             // feature-gap step 6). turns counts turns sent incl. the current one, so prior

@@ -21,7 +21,7 @@ A clean VERTICAL slice, layered like the rest of the SDK (arrows point inward):
     `settings.list_awaiting_approval`); it imports NOTHING outward (no fastapi /
     httpx / subprocess / psycopg2 / asyncpg) and never reaches back into `app.main`,
     the concrete `app.appdb` / `app.adapters`, the concrete `app.harness` /
-    `app.providers`, or the `app.orchestrator` imperative core. The roster is passed
+    `app.harness`, or the `app.orchestrator` imperative core. The roster is passed
     IN by the caller (the agents `agents=` pattern). The shaping + proposal logic
     lifted 1:1 from `main._dispatch_is_open` / `_agent_index` / `_normalize_target` /
     `_proposed_agent` / `_dispatch_row` / `_dispatch_rows` (+ the board counts/flag

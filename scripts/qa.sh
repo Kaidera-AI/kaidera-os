@@ -28,13 +28,14 @@ step "Static Python and shell checks"
   local-cortex/console/app/auth.py \
   local-cortex/console/app/harness_runner.py \
   local-cortex/console/app/orchestrator.py \
-  local-cortex/console/app/settings.py \
-  local-cortex/console/app/skill_embed.py
-git ls-files -z '*.sh' | xargs -0 shellcheck -x --severity=error
+  local-cortex/console/app/settings.py
+while IFS= read -r -d '' file; do
+  [[ ! -f "$file" ]] || shellcheck -x --severity=error "$file"
+done < <(git ls-files -z '*.sh')
 "$CONSOLE_PYTHON" -m compileall -q .agents/api .agents/scripts local-cortex/console/app \
   local-cortex/containers scripts redistributable/scripts
 while IFS= read -r -d '' file; do
-  bash -n "$file"
+  [[ ! -f "$file" ]] || bash -n "$file"
 done < <(git ls-files -z '*.sh')
 
 step "Cortex API tests"
@@ -61,11 +62,6 @@ step "SPA tests, types, lint, and production bundle"
   npm run lint
   npm run build
 )
-
-if command -v swift >/dev/null 2>&1; then
-  step "macOS operator tests"
-  (cd native/macos/KaideraOSOperator && swift test)
-fi
 
 step "Release fitness"
 scripts/fitness/run.sh

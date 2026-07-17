@@ -13,8 +13,8 @@ hardcoded product identities.
   to downstream installations.
 - Deployment-specific bugs must be classified first as either harness core,
   extension/project config, or infrastructure.
-- Licensing is a soft notification until the hosted Kaidera AI licensing service is
-  formally live.
+- Community builds contain no commercial licensing or built-in model-provider
+  integration. External AI harnesses are installed and authenticated separately.
 
 ## Responsibility Model
 
@@ -23,7 +23,7 @@ hardcoded product identities.
 | Harness architecture | Lead maintainer | Owner | Implementer/reviewer |
 | Core implementation | Assigned worker | Lead maintainer | Reviewer |
 | Project extensions | Project owner / extension maintainer | Owner | Harness maintainer |
-| Provider/runtime config | Deployment admin | Owner | Harness maintainer |
+| External harness/runtime config | Deployment admin | Owner | Harness maintainer |
 | Release/deployment | Release operator | Owner | Reviewer |
 | Security/destructive operations | Owner-approved operator | Owner | Reviewer |
 

@@ -3,10 +3,10 @@
 
   The SUBSTANCE is the usage + estimated-cost breakdowns, computed for the
   SELECTED PROJECT from its agents × each agent's effective model × token usage
-  × the providers pricing catalog (built in main._analytics_usage_cost):
+  plus execution metadata reported by each external harness:
 
     1. Total usage BY MODEL            (bar + table)
-    2. Usage BY MODEL × PROVIDER       (provider totals + their model rows)
+    2. Usage BY MODEL × EXECUTION SOURCE
     3. MODEL USAGE PER AGENT           (agent · model · token usage table)
     4. est. API COST BY AGENT          (tokens × model price/Mtok; 'n/a' unpriced)
     5. est. API COST BY PROJECT        (Σ per-agent est. cost)
@@ -14,10 +14,9 @@
   A slim headline KPI row (events/24h, active tasks, decisions, recent tokens)
   is kept above the breakdowns.
 
-  COST NOTE: the CTO is on SUBSCRIPTIONS now, so every cost here is the
-  counterfactual "what it WOULD cost on metered API tokens" (priced from
-  providers.py per-Mtok), NOT a real charge. Real cost arrives with metered
-  per-call telemetry. Token usage is best-effort from /history `token_count`
+  COST NOTE: values are estimates reported by an external harness when available,
+  not charges calculated or settled by Kaidera OS. Token usage is best-effort from
+  /history `token_count`
   frames (server-capped window) — agents with no frames show "n/a" and are NOT
   zero-filled. TODO(usage-telemetry) noted in the footnote.
 
@@ -31,7 +30,7 @@
                       model_count, by_provider[], by_provider_bars[],
                       provider_count, cost_rows[], project_cost(_h),
                       priced_agent_count }
-    an_catalog_priced : did the providers catalog load (pricing available)
+    an_catalog_priced : whether model pricing metadata was available
 #}
 {% macro stat(label, value, unit="", na_note="n/a") -%}
   <div class="an-kpi">
@@ -156,7 +155,7 @@
             <span class="an-cs-val">{{ an_usage.agents_with_usage }}<span class="an-cs-of">/ {{ an_usage.agent_count }}</span></span>
           </div>
           <div class="an-cost-stat">
-            <span class="an-cs-lab">Models · providers</span>
+            <span class="an-cs-lab">Models · sources</span>
             <span class="an-cs-val">{{ an_usage.model_count }}<span class="an-cs-of">· {{ an_usage.provider_count }}</span></span>
           </div>
         </div>
@@ -327,10 +326,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
         <div>
           Usage is rolled up from per-run rows in the <b>App-DB</b> (<code>usage_events</code>) — the separate operational store, NOT Cortex
-          (E007 data separation: Cortex stays agent memory + coordination). Each run records its resolved <b>model</b> · <b>provider</b> · token in/out,
-          and an <b>estimated cost</b> (the harness's reported cost, else the run's tokens priced at the model's per-Mtok rate from the
-          <b>Providers &amp; Models</b> catalog — {{ "loaded" if an_catalog_priced else "unavailable — pricing n/a" }}).
-          <b>Cost is an estimate</b> of metered API spend — the team is on <b>subscriptions</b>, so nothing here is billed; it becomes real on metered API tokens.
+          (E007 data separation: Cortex stays agent memory + coordination). Each run records its resolved <b>model</b>, execution source, token in/out,
+          and any <b>estimated cost</b> reported by the harness.
+          <b>Cost is an estimate</b>; Kaidera OS Community neither meters nor settles model usage.
           Where a project / agent has no recorded runs, usage and cost show <b>n/a</b> (never fabricated).
           {# TODO(usage-telemetry): per-harness routing (codex turn.completed.usage etc.) lands token capture for the non-claude lanes; the App-DB schema already carries provider/model/tokens/cost for them. #}
         </div>

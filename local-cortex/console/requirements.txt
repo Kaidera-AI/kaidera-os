@@ -5,18 +5,11 @@ uvicorn[standard]==0.34.0
 jinja2==3.1.6
 starlette==1.3.1     # explicit security pin for the FastAPI transport/static-file layer
 httpx==0.28.1
-sse-starlette==2.2.1   # for later (SSE /events bridge); unused in Inc00
-pywebview==5.3.2       # for later (packaged window launcher); unused by `uvicorn` dev run
+sse-starlette==2.2.1   # streamed chat and dispatch events
 lzstring==1.0.4        # decode Obsidian .excalidraw.md compressed-json scenes for the workspace drawing render
 asyncpg==0.31.0        # App-DB (E007 / DATA_SEPARATION) — usage telemetry + analytics store (separate from Cortex). Optional at runtime: the console degrades gracefully if the harness-appdb container is down.
 psycopg2-binary==2.9.12
 webauthn==2.8.0        # First-party optional passkeys/WebAuthn; email code/link remains the default login path.
-cryptography==49.0.0   # Ed25519 license grant verification; required on clean installs, not just the dev venv.
-
-# The kaidera harness runs as a REAL tool-using agent (bash/read/write/web + a tool-exec
-# loop) - app/kaidera_agent.py. `slim` + only the model groups we use (OpenAI-compatible
-# providers + Anthropic); codex-subscription stays on its own OAuth path, no extra group.
-pydantic-ai-slim[openai,anthropic]==1.107.0
 
 # ── Dev / fitness-gate deps (NOT shipped in the app; needed to run the gates) ──
 # import-linter enforces the SDK's layer rule (the domain imports nothing

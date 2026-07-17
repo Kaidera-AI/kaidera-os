@@ -22,11 +22,6 @@
  *   POST /settings/{project}/agents/{a}/config  → AgentConfigWriteResult (write, console-local)
  *   POST /settings/{project}/agents/{a}/promote → PromoteResult          (explicit registry promote)
  *   GET  /settings/{project}/system-schema     → SystemSchema            (3a)
- *   GET  /settings/{project}/providers         → ProvidersCatalog        (3a)
- *   GET  /settings/{project}/providers/config  → ProvidersConfig         (Track 2: configured providers)
- *   POST /settings/{project}/custom-providers          → CustomProviderResult  (3a write)
- *   POST /settings/{project}/custom-providers/delete   → CustomProviderResult  (3a write)
- *   POST /settings/{project}/provider-key-test → KeyTestResult           (3a probe)
  *   POST /settings/{project}/workspace         → WorkspaceResult         (3a write)
  *
  * The live SSE channel (/runstate/stream) is consumed by useRunStateStream, not here.
@@ -59,7 +54,6 @@ import type {
   CortexEmbeddingJobResult,
   CortexConfigResult,
   CortexPlatformConfig,
-  CustomProviderResult,
   DispatchActivity,
   DispatchBoard,
   ExplainList,
@@ -78,7 +72,6 @@ import type {
   GraphPayload,
   HistoryPayload,
   FlagsWriteResult,
-  KeyTestResult,
   PlanningBeatStatus,
   PlanningBeatWritePayload,
   Project,
@@ -87,8 +80,6 @@ import type {
   ProjectPackListResult,
   ProjectFlags,
   PromoteResult,
-  ProvidersCatalog,
-  ProvidersConfig,
   RegisterAgentPayload,
   RegisterAgentResult,
   RegisterProjectPayload,
@@ -103,10 +94,6 @@ import type {
   ScheduledJobWriteResult,
   SkillBindResult,
   SkillInstallResult,
-  BillingStatus,
-  LicenseLoginRequest,
-  LicenseStatus,
-  LicenseTransportResult,
   SkillsPayload,
   SystemSchema,
   UpdateApplyResult,
@@ -247,11 +234,7 @@ async function deleteJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 const enc = encodeURIComponent
 
-// Settings-scope encoder. Provider keys + app settings are GLOBAL (the backend
-// `app_settings` table is not per-project), so the `{project}` in a settings URL is
-// just routing. Before any project exists (fresh install), resolve to the `_system`
-// scope so provider keys can be added/rotated during first-run setup. Once a project
-// is selected the real key is used (identical global data either way).
+// App settings are global, so a fresh install uses the reserved system scope.
 const senc = (project: string) => enc(project || '_system')
 
 /**
@@ -925,39 +908,6 @@ export const api = {
     postJson<AppSettingsWriteResult>(`/settings/${senc(project)}/app`, { settings }, signal),
 
   /**
-   * The license posture for the Settings → License panel — `GET /settings/{project}/license`.
-   * edition + validity + customer/expiry + resolved entitlements (unlocked harnesses +
-   * capacity caps). Never carries the raw token. Apply a token via `setAppSetting(project,
-   * 'license_key', token)` then re-fetch — the gates re-read it live.
-   */
-  license: (project: string, signal?: AbortSignal) =>
-    getJson<LicenseStatus>(`/settings/${senc(project)}/license`, signal),
-
-  licenseLogin: (project: string, request: LicenseLoginRequest, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/login`, request, signal),
-
-  licenseActivate: (project: string, orgLoginToken: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(
-      `/settings/${senc(project)}/license/activate`,
-      { org_login_token: orgLoginToken },
-      signal,
-    ),
-
-  licenseHeartbeat: (project: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/heartbeat`, {}, signal),
-
-  licenseRestore: (project: string, signal?: AbortSignal) =>
-    postJson<LicenseTransportResult>(`/settings/${senc(project)}/license/restore`, {}, signal),
-
-  /**
-   * The Billing-tab view — `GET /settings/{project}/billing`: per-entitlement usage
-   * (counted from Cortex) vs the entitled total, the wallet balance, and active add-ons.
-   * Buying add-ons / topping up the wallet lives in the Kaidera AI cust-portal (`portal_url`).
-   */
-  billing: (project: string, signal?: AbortSignal) =>
-    getJson<BillingStatus>(`/settings/${senc(project)}/billing`, signal),
-
-  /**
    * Save one agent's console-local override (designation/harness/model/…). Wraps
    * the field patch as `{override: {...}}` (MERGE semantics server-side: a blank
    * value clears that field). Returns the post-save effective override +
@@ -998,25 +948,6 @@ export const api = {
    */
   systemSchema: (project: string, signal?: AbortSignal) =>
     getJson<SystemSchema>(`/settings/${senc(project)}/system-schema`, signal),
-
-  /**
-   * The live model catalog grouped by provider (model/type/reasoning-tiers/pricing/
-   * context/source/freshness). `GET /settings/{project}/providers`. Degrades to
-   * `{providers: []}` server-side on a fetch error (never raises here).
-   */
-  providers: (project: string, signal?: AbortSignal) =>
-    getJson<ProvidersCatalog>(`/settings/${senc(project)}/providers`, signal),
-
-  /**
-   * The CONFIGURED/ACTIVE providers for the Providers control surface — which
-   * providers have a key set + their Test target. `GET /settings/{project}/
-   * providers/config` → `{providers:[{name, label, key_is_set, is_custom, testable,
-   * provider_ref, key_field?, base_url?}]}`. NEVER a raw key (only `key_is_set`).
-   * Degrades to the built-in list + `store_connected=false` server-side on a down
-   * store (never raises here).
-   */
-  providersConfig: (project: string, signal?: AbortSignal) =>
-    getJson<ProvidersConfig>(`/settings/${senc(project)}/providers/config`, signal),
 
   /**
    * Read the API-owned Cortex ingestion/search model config. This is global platform
@@ -1060,55 +991,6 @@ export const api = {
   cortexEmbeddingJob: (project: string, jobId: string, signal?: AbortSignal) =>
     getJson<CortexEmbeddingJobResult>(
       `/cortex/embeddings/jobs/${enc(jobId)}?project=${enc(project)}`,
-      signal,
-    ),
-
-  // -- settings writes (step 3a) --------------------------------------------
-  /**
-   * Add an operator-defined custom provider (`name` + `base_url` + `api_key`).
-   * Returns `{ok, added, error, custom_providers}` where `custom_providers` is the
-   * refreshed MASKED list (the raw key is NEVER echoed back). `POST /settings/
-   * {project}/custom-providers`.
-   */
-  addCustomProvider: (
-    project: string,
-    body: { name: string; base_url: string; api_key: string },
-    signal?: AbortSignal,
-  ) =>
-    postJson<CustomProviderResult>(
-      `/settings/${senc(project)}/custom-providers`,
-      body,
-      signal,
-    ),
-
-  /**
-   * Remove a custom provider by `id` (or `name`). Returns `{ok, removed, error,
-   * custom_providers}` with the refreshed masked list. `POST /settings/{project}/
-   * custom-providers/delete`.
-   */
-  deleteCustomProvider: (project: string, id: string, signal?: AbortSignal) =>
-    postJson<CustomProviderResult>(
-      `/settings/${senc(project)}/custom-providers/delete`,
-      { id },
-      signal,
-    ),
-
-  /**
-   * Probe a provider key (read-only — lists models / key-info, never a completion,
-   * so it spends no tokens). `provider` is a built-in secret-key field (e.g.
-   * `anthropic_api_key`) or `custom:<id>`. Pass `key` to test a freshly-typed value,
-   * or `use_stored:true` / omit it to test the stored/env key. The key is NEVER
-   * echoed — only `{ok, detail, status, label}`. `POST /settings/{project}/
-   * provider-key-test`.
-   */
-  providerKeyTest: (
-    project: string,
-    body: { provider: string; key?: string; use_stored?: boolean },
-    signal?: AbortSignal,
-  ) =>
-    postJson<KeyTestResult>(
-      `/settings/${senc(project)}/provider-key-test`,
-      body,
       signal,
     ),
 
