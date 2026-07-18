@@ -7,9 +7,9 @@ Kaidera OS separates four responsibilities:
 3. External CLI harnesses own AI model execution and authentication.
 4. Cortex owns durable project memory, graph data, events, and coordination.
 
-The public source supports Claude Code, Codex, and PI. Model and effort metadata is
-discovered dynamically from each installed CLI. A discovery or authentication
-failure disables that harness without taking down the console.
+The public source supports Claude Code, Codex, and PI. Model and effort
+metadata is discovered dynamically from each installed CLI. A discovery or
+authentication failure disables that harness without taking down the console.
 
 ## Source Boundary
 

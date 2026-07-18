@@ -38,6 +38,9 @@ while IFS= read -r -d '' file; do
   [[ ! -f "$file" ]] || bash -n "$file"
 done < <(git ls-files -z '*.sh')
 
+step "Community documentation"
+bash scripts/fitness/check-community-docs.sh
+
 step "Cortex API tests"
 (
   cd .agents/api

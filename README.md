@@ -71,7 +71,8 @@ kaidera-os install
 ### curl
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Kaidera-AI/homebrew-kaidera/main/install.sh | bash
+BASE=https://raw.githubusercontent.com/Kaidera-AI/homebrew-kaidera/main
+curl -fsSL "$BASE/install.sh" | bash
 ```
 
 Release launchers download the community archive from this repository and verify

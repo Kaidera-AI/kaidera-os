@@ -11,6 +11,7 @@ All notable changes to Kaidera OS community source are recorded here.
 - Restored build-time Help sources and clean-checkout test fixtures.
 
 ## v0.1.233 - 2026-07-17
+
 **Provider-free community source boundary.** The AGPL edition contains Cortex,
 project coordination, local orchestration, supported external harness integration,
 graph, memory, approvals, audit, and collaboration surfaces without commercial
